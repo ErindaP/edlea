@@ -1,0 +1,23 @@
+image:
+  max_size: 1280
+alignment:
+  method: auto
+  min_matches: 8
+  ratio_test: 0.75
+features:
+  backend: auto
+  model_name: facebook/dinov2-base
+  local_files_only: false
+  image_size: 518
+comparison:
+  dino_weight: 0.6
+  ssim_weight: 0.3
+  rgb_weight: 0.1
+detection:
+  threshold: 0.4
+  min_area: 150
+  morph_kernel: 5
+segmentation:
+  backend: heuristic
+outputs:
+  directory: outputs
