@@ -17,8 +17,16 @@ TYPE_LABELS = {
 def generate_text_report(report: dict[str, Any]) -> str:
     changes = report.get("detected_changes", [])
     if not changes:
+        max_score = report.get("max_change_score", 0.0)
+        threshold = report.get("detection_threshold", 0.0)
+        if max_score >= threshold:
+            detail = (f"Des pixels présentent pourtant un score de changement élevé (maximum {max_score:.2f}, "
+                      f"seuil {threshold:.2f}), mais aucune composante n’a dépassé le filtre de surface ou de morphologie.")
+        else:
+            detail = f"Le score maximal observé est {max_score:.2f}, inférieur au seuil de {threshold:.2f}."
         return ("État des lieux comparé automatiquement.\n\n"
-                "Aucune différence visuelle significative n’a été détectée avec les paramètres actuels.\n\n"
+                "Aucune zone de différence exploitable n’a été détectée avec les paramètres actuels.\n"
+                f"{detail}\n\n"
                 "Ce résultat reste une aide à la vérification visuelle.")
     types = Counter(change.get("type", "unknown") for change in changes)
     summary = ", ".join(f"{count} {TYPE_LABELS.get(kind, kind)}" for kind, count in types.items())
@@ -47,4 +55,3 @@ def generate_text_report(report: dict[str, Any]) -> str:
         "Limites : ce rapport décrit des différences visuelles et ne constitue pas une expertise, une attribution de responsabilité ou une estimation financière.",
     ])
     return "\n".join(lines)
-

@@ -34,6 +34,15 @@ def test_black_line_is_localized():
     assert detections[0].bbox[0] <= 20 and detections[0].bbox[2] >= 79
 
 
+def test_thin_crack_survives_default_morphology():
+    change = np.zeros((160, 160), dtype=np.float32)
+    change[20:145, 78:80] = 0.75
+    masks = HeuristicSegmenter().segment(np.zeros((160, 160, 3), dtype=np.uint8))
+    detections = detect_changes(change, masks, threshold=0.3, min_area=100, morph_kernel=5, opening_kernel=0)
+    assert detections
+    assert detections[0].bbox[1] <= 20 and detections[0].bbox[3] >= 144
+
+
 def test_anomaly_classifier_returns_explainable_type():
     before = np.zeros((100, 160, 3), dtype=np.uint8)
     after = before.copy()

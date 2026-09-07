@@ -35,8 +35,8 @@ with st.sidebar:
     dino_weight = st.slider("Poids DINO", 0.0, 1.0, 0.6, 0.05)
     ssim_weight = st.slider("Poids SSIM", 0.0, 1.0, 0.3, 0.05)
     rgb_weight = st.slider("Poids RGB", 0.0, 1.0, 0.1, 0.05)
-    threshold = st.slider("Seuil de changement", 0.0, 1.0, 0.4, 0.05)
-    min_area = st.number_input("Surface minimale (pixels)", min_value=1, value=150, step=25)
+    threshold = st.slider("Seuil de changement", 0.0, 1.0, 0.3, 0.05)
+    min_area = st.number_input("Surface minimale (pixels)", min_value=1, value=100, step=25)
 
 if not before_file or not after_file:
     st.info("Chargez une image Before et une image After dans la barre latérale.")

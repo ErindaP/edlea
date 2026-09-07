@@ -14,9 +14,10 @@ comparison:
   ssim_weight: 0.3
   rgb_weight: 0.1
 detection:
-  threshold: 0.4
-  min_area: 150
+  threshold: 0.3
+  min_area: 100
   morph_kernel: 5
+  opening_kernel: 0
 segmentation:
   backend: heuristic
 outputs:

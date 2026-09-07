@@ -26,7 +26,7 @@ def _default_config() -> dict[str, Any]:
     return {"image": {"max_size": 1280}, "alignment": {"method": "auto", "min_matches": 8, "ratio_test": 0.75},
             "features": {"backend": "auto", "model_name": "facebook/dinov2-base", "local_files_only": False, "image_size": 518},
             "comparison": {"dino_weight": 0.6, "ssim_weight": 0.3, "rgb_weight": 0.1},
-            "detection": {"threshold": 0.4, "min_area": 150, "morph_kernel": 5}, "outputs": {"directory": "outputs"}}
+            "detection": {"threshold": 0.3, "min_area": 100, "morph_kernel": 5, "opening_kernel": 0}, "outputs": {"directory": "outputs"}}
 
 
 class ChangeDetectionPipeline:
@@ -67,7 +67,8 @@ class ChangeDetectionPipeline:
         masks = self.segmenter.segment(after_image)
         detection_cfg = self.config.get("detection", {})
         threshold = detection_cfg.get("threshold", 0.4)
-        detections = detect_changes(fused_map, masks, threshold, detection_cfg.get("min_area", 150), detection_cfg.get("morph_kernel", 5))
+        detections = detect_changes(fused_map, masks, threshold, detection_cfg.get("min_area", 100),
+                                    detection_cfg.get("morph_kernel", 5), detection_cfg.get("opening_kernel", 0))
         classified_changes = []
         for detection in detections:
             classification = self.classifier.classify(alignment.aligned_before, after_image, fused_map, detection)
@@ -78,6 +79,8 @@ class ChangeDetectionPipeline:
                   "feature_backend": self.feature_extractor.backend_name,
                   "feature_backend_warning": getattr(self.feature_extractor, "load_error", None),
                   "global_change_score": round(float(fused_map.mean()), 6),
+                  "max_change_score": round(float(fused_map.max()), 6),
+                  "detection_threshold": threshold,
                   "changed_surface_ratio": round(float(np.mean(fused_map > threshold)), 6),
                   "regions": regional_statistics(fused_map, masks, threshold), "detected_changes": classified_changes}
         text_report = generate_text_report(report)

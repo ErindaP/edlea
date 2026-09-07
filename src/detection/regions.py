@@ -21,12 +21,18 @@ def regional_statistics(change_map: np.ndarray, masks: list[Mask], threshold: fl
 
 
 def detect_changes(change_map: np.ndarray, masks: list[Mask], threshold: float = 0.4,
-                   min_area: int = 150, morph_kernel: int = 5) -> list[DetectedChange]:
+                   min_area: int = 150, morph_kernel: int = 5, opening_kernel: int = 0) -> list[DetectedChange]:
     binary = (change_map > threshold).astype(np.uint8)
-    kernel_size = max(1, int(morph_kernel))
-    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    # An opening with a square 5x5 kernel erases thin cracks. Keep it disabled
+    # by default and use the minimum-area filter for isolated noise instead.
+    opening_size = int(opening_kernel)
+    if opening_size > 1:
+        opening = np.ones((opening_size, opening_size), dtype=np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, opening)
+    closing_size = int(morph_kernel)
+    if closing_size > 1:
+        closing = np.ones((closing_size, closing_size), dtype=np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, closing)
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
     image_area = change_map.shape[0] * change_map.shape[1]
     detections: list[DetectedChange] = []

@@ -35,6 +35,8 @@ La branche `rapport` ajoute une classification explicable après la détection. 
 
 Le rapport texte est une synthèse visuelle et non une expertise : il ne conclut ni à la responsabilité, ni au coût, ni à la nature certaine d’un dommage.
 
+Pour les fissures et rayures, l’ouverture morphologique est désactivée par défaut : une ouverture carrée `5x5` risquerait de supprimer une ligne fine. Le seuil V2 par défaut est `0.3`; il reste réglable dans l’interface. Le rapport indique aussi le score maximal observé lorsqu’aucune composante ne passe les filtres.
+
 ## Tests rapides
 
 ```bash
