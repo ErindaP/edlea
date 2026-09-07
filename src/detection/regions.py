@@ -43,7 +43,7 @@ def detect_changes(change_map: np.ndarray, masks: list[Mask], threshold: float =
             if overlap > best_overlap:
                 surface, best_overlap = region.label, overlap
         x, y, w, h = [int(value) for value in stats[label_id, :4]]
-        detections.append(DetectedChange(next_id, (x, y, x + w, y + h), area, score, surface, area / image_area))
+        detections.append(DetectedChange(next_id, (x, y, x + w, y + h), area, score, surface,
+                                          area / image_area, binary_mask=component))
         next_id += 1
     return sorted(detections, key=lambda item: item.score, reverse=True)
-

@@ -41,6 +41,7 @@ class DetectedChange:
     score: float
     surface: str
     changed_area_ratio: float
+    binary_mask: np.ndarray | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -51,4 +52,3 @@ class DetectedChange:
             "area_pixels": self.area,
             "changed_area_ratio": round(self.changed_area_ratio, 6),
         }
-

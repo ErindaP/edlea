@@ -13,8 +13,10 @@ from .comparison.feature import compute_feature_change_map
 from .comparison.fusion import compute_fused_change_map
 from .comparison.pixel import compute_pixel_maps
 from .detection.regions import detect_changes, regional_statistics
+from .detection.classification import AnomalyClassifier
 from .features.dinov3 import DinoFeatureExtractor
 from .image_io import load_image, match_size
+from .reporting.text import generate_text_report
 from .segmentation.segmenter import HeuristicSegmenter, Segmenter
 from .types import AlignmentResult
 from .visualization.overlays import render_detections, render_heatmap, render_matches
@@ -30,7 +32,8 @@ def _default_config() -> dict[str, Any]:
 class ChangeDetectionPipeline:
     def __init__(self, matcher: RegistrationBackend | None = None,
                  feature_extractor: DinoFeatureExtractor | None = None,
-                 segmenter: Segmenter | None = None, comparator: Any | None = None,
+                 segmenter: Segmenter | None = None, classifier: AnomalyClassifier | None = None,
+                 comparator: Any | None = None,
                  config: dict[str, Any] | None = None):
         self.config = config or _default_config()
         alignment_cfg = self.config.get("alignment", {})
@@ -39,6 +42,7 @@ class ChangeDetectionPipeline:
         self.matcher = matcher or OpenCVMatcher(**matcher_kwargs)
         self.feature_extractor = feature_extractor or DinoFeatureExtractor(**features_cfg)
         self.segmenter = segmenter or HeuristicSegmenter()
+        self.classifier = classifier or AnomalyClassifier()
         self.comparator = comparator
 
     @classmethod
@@ -64,17 +68,25 @@ class ChangeDetectionPipeline:
         detection_cfg = self.config.get("detection", {})
         threshold = detection_cfg.get("threshold", 0.4)
         detections = detect_changes(fused_map, masks, threshold, detection_cfg.get("min_area", 150), detection_cfg.get("morph_kernel", 5))
+        classified_changes = []
+        for detection in detections:
+            classification = self.classifier.classify(alignment.aligned_before, after_image, fused_map, detection)
+            item = detection.to_dict()
+            item.update(classification.to_dict())
+            classified_changes.append(item)
         report = {"alignment": {"success": alignment.success, "method": "opencv_orb_homography", "num_matches": alignment.num_matches, "num_inliers": alignment.num_inliers},
                   "feature_backend": self.feature_extractor.backend_name,
                   "feature_backend_warning": getattr(self.feature_extractor, "load_error", None),
                   "global_change_score": round(float(fused_map.mean()), 6),
                   "changed_surface_ratio": round(float(np.mean(fused_map > threshold)), 6),
-                  "regions": regional_statistics(fused_map, masks, threshold), "detected_changes": [item.to_dict() for item in detections]}
+                  "regions": regional_statistics(fused_map, masks, threshold), "detected_changes": classified_changes}
+        text_report = generate_text_report(report)
         visuals = {"before": before_image, "after": after_image, "aligned_before": alignment.aligned_before,
                    "matches": render_matches(before_image, after_image, alignment), "dino_heatmap": render_heatmap(dino_map, after_image),
                    "fused_heatmap": render_heatmap(fused_map, after_image), "detections": render_detections(after_image, detections)}
         result = {"report": report, "alignment": alignment, "change_maps": {"dino": dino_map, "fused": fused_map, **pixel_maps},
-                  "masks": masks, "detections": detections, "visuals": visuals}
+                  "masks": masks, "detections": detections, "visuals": visuals, "text_report": text_report,
+                  "source_images": {"aligned_before": alignment.aligned_before, "after": after_image}}
         if output_dir is not None:
             self.save_result(result, output_dir)
         return result
@@ -87,3 +99,13 @@ class ChangeDetectionPipeline:
         for key, filename in names.items():
             Image.fromarray(result["visuals"][key]).save(directory / filename)
         (directory / "report.json").write_text(json.dumps(result["report"], indent=2), encoding="utf-8")
+        (directory / "report.txt").write_text(result["text_report"], encoding="utf-8")
+        crops_dir = directory / "anomalies"
+        crops_dir.mkdir(exist_ok=True)
+        for detection in result["detections"]:
+            x1, y1, x2, y2 = detection.bbox
+            identifier = f"change_{detection.id}"
+            Image.fromarray(result["source_images"]["aligned_before"][y1:y2, x1:x2]).save(crops_dir / f"{identifier}_before.png")
+            Image.fromarray(result["source_images"]["after"][y1:y2, x1:x2]).save(crops_dir / f"{identifier}_after.png")
+            if detection.binary_mask is not None:
+                Image.fromarray((detection.binary_mask[y1:y2, x1:x2].astype(np.uint8) * 255)).save(crops_dir / f"{identifier}_mask.png")

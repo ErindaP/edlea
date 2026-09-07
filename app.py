@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -24,7 +25,7 @@ def get_pipeline(dino_weight: float, ssim_weight: float, rgb_weight: float, thre
 
 st.set_page_config(page_title="Property Change Detection", layout="wide")
 st.title("Comparaison d’états des lieux")
-st.caption("Prototype V1 — détection de changements visuels entre une entrée et une sortie")
+st.caption("Prototype V2 — détection, classification indicative et rapport des changements")
 
 with st.sidebar:
     st.header("Images")
@@ -60,5 +61,14 @@ for index, (title, key) in enumerate(views):
 
 st.subheader("Régions")
 st.dataframe(report["regions"], use_container_width=True, hide_index=True)
+st.subheader("Rapport textuel")
+st.text(result["text_report"])
+download_columns = st.columns(2)
+with download_columns[0]:
+    st.download_button("Télécharger le rapport texte", result["text_report"], "report.txt", "text/plain")
+with download_columns[1]:
+    st.download_button("Télécharger le rapport JSON", json.dumps(report, indent=2, ensure_ascii=False), "report.json", "application/json")
+st.subheader("Classification indicative")
+st.dataframe(report["detected_changes"], use_container_width=True, hide_index=True)
 st.subheader("Rapport JSON")
 st.json(report)
