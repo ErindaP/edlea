@@ -5,10 +5,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 import streamlit as st
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 from src.housing.localization import localize_detections
 from src.housing.plan import FloorPlan
-from src.housing.render import render_plan_25d
+from src.housing.render import build_plan_view, render_plan_25d, wall_at_pixel
 from src.housing.store import HousingStore
 from src.pipeline import ChangeDetectionPipeline
 from src.reporting.text import generate_text_report
@@ -34,6 +35,20 @@ def all_anomalies(store: HousingStore, property_id: str) -> list[dict]:
     for report in store.list_reports(property_id):
         anomalies.extend(item for item in report.get("detected_changes", []) if item.get("location"))
     return anomalies
+
+
+def interactive_plan(plan: FloorPlan, anomalies: list[dict], key: str) -> str | None:
+    image = render_plan_25d(plan, anomalies)
+    click = streamlit_image_coordinates(image, width="content", key=key, cursor="pointer")
+    if click and click.get("x") is not None and click.get("y") is not None:
+        view = build_plan_view(plan, image.shape[1], image.shape[0])
+        wall = wall_at_pixel(plan, view, click["x"], click["y"])
+        if wall is not None:
+            st.session_state["selected_wall_id"] = wall.id
+            st.success(f"Mur sélectionné : {wall.id} ({wall.room_id})")
+            return wall.id
+        st.info("Le clic ne correspond pas à un mur. Cliquez sur une face grise du plan.")
+    return st.session_state.get("selected_wall_id")
 
 
 store = HousingStore(HOUSING_ROOT)
@@ -74,18 +89,22 @@ plan_tab, compare_tab, history_tab = st.tabs(["Plan 2.5D", "Nouvelle comparaison
 
 with plan_tab:
     st.subheader(plan.name)
-    st.image(render_plan_25d(plan, anomalies), use_container_width=True)
+    interactive_plan(plan, anomalies, key=f"plan_overview_{selected_property}")
     st.caption("La localisation est une projection normalisée sur le mur choisi pour chaque paire d’images. Elle devient métrique après calibration de la prise de vue.")
     st.dataframe([{"id": wall.id, "room_id": wall.room_id, "length_m": round(wall.length, 2), "height_m": wall.height} for wall in plan.walls], use_container_width=True, hide_index=True)
 
 with compare_tab:
     st.subheader("Ajouter une observation")
-    st.write("Chaque paire d’images est conservée dans le dossier du logement et associée à un mur du plan.")
+    st.write("Cliquez sur le mur concerné ci-dessous : il sera automatiquement sélectionné pour les photos ajoutées.")
+    interactive_plan(plan, anomalies, key=f"plan_assignment_{selected_property}")
     before_file = st.file_uploader("Image Before", type=["jpg", "jpeg", "png", "webp"], key="property_before")
     after_file = st.file_uploader("Image After", type=["jpg", "jpeg", "png", "webp"], key="property_after")
     observation_id = st.text_input("Identifiant de l’observation", value="inspection_sortie")
     wall_labels = {wall.id: f"{wall.id} — {wall.room_id}" for wall in plan.walls}
-    wall_id = st.selectbox("Mur observé", list(wall_labels), format_func=lambda key: wall_labels[key])
+    selected_wall = st.session_state.get("selected_wall_id", plan.walls[0].id)
+    wall_index = list(wall_labels).index(selected_wall) if selected_wall in wall_labels else 0
+    wall_id = st.selectbox("Mur observé", list(wall_labels), index=wall_index, format_func=lambda key: wall_labels[key])
+    st.session_state["selected_wall_id"] = wall_id
     analyze = st.button("Analyser et localiser les différences", type="primary", disabled=not (before_file and after_file))
 
     if analyze:
