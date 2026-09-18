@@ -37,6 +37,28 @@ Le rapport texte est une synthèse visuelle et non une expertise : il ne conclut
 
 Pour les fissures et rayures, l’ouverture morphologique est désactivée par défaut : une ouverture carrée `5x5` risquerait de supprimer une ligne fine. Le seuil V2 par défaut est `0.3`; il reste réglable dans l’interface. Le rapport indique aussi le score maximal observé lorsqu’aucune composante ne passe les filtres.
 
+## Logements et plan 2.5D
+
+La démo contient une pseudo-base de données sur disque dans `data/housing/`. Chaque logement est organisé ainsi :
+
+```text
+data/housing/<logement>/
+├── property.json
+├── plan.json
+└── observations/<inspection>/
+    ├── before.jpg
+    ├── after.jpg
+    ├── metadata.json
+    ├── report.json
+    ├── report.txt
+    ├── outputs/
+    └── anomalies/
+```
+
+Le logement de démonstration contient un plan synthétique de quatre pièces et des murs extrudés à `2.6 m`, rendus sous forme de représentation 2.5D. Dans l’onglet `Nouvelle comparaison`, chaque paire d’images est associée à un mur. Le centre de chaque anomalie est converti en coordonnées normalisées `(u, v)` sur ce mur, puis en coordonnées métriques approximatives `(x_m, y_m, z_m)`. Les marqueurs sont ensuite affichés sur le plan et conservés dans le rapport JSON.
+
+Cette localisation est une première approximation : elle suppose que l’image couvre principalement le mur sélectionné. Une calibration par points correspondants ou une estimation de pose caméra sera nécessaire pour obtenir une localisation métrique précise.
+
 ## Tests rapides
 
 ```bash

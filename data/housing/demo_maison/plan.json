@@ -1,0 +1,26 @@
+{
+  "id": "sample_house",
+  "name": "Maison de démonstration",
+  "units": "m",
+  "rooms": [
+    {"id": "living", "label": "Salon", "polygon": [[0, 0], [5, 0], [5, 4], [0, 4]]},
+    {"id": "kitchen", "label": "Cuisine", "polygon": [[5, 0], [8, 0], [8, 4], [5, 4]]},
+    {"id": "bedroom", "label": "Chambre", "polygon": [[0, 4], [4, 4], [4, 7], [0, 7]]},
+    {"id": "bathroom", "label": "Salle de bain", "polygon": [[4, 4], [8, 4], [8, 7], [4, 7]]}
+  ],
+  "walls": [
+    {"id": "living_north", "room_id": "living", "start": [0, 0], "end": [5, 0], "height": 2.6, "thickness": 0.12},
+    {"id": "living_east", "room_id": "living", "start": [5, 0], "end": [5, 4], "height": 2.6, "thickness": 0.12},
+    {"id": "living_south", "room_id": "living", "start": [5, 4], "end": [0, 4], "height": 2.6, "thickness": 0.12},
+    {"id": "living_west", "room_id": "living", "start": [0, 4], "end": [0, 0], "height": 2.6, "thickness": 0.12},
+    {"id": "kitchen_north", "room_id": "kitchen", "start": [5, 0], "end": [8, 0], "height": 2.6, "thickness": 0.12},
+    {"id": "kitchen_east", "room_id": "kitchen", "start": [8, 0], "end": [8, 4], "height": 2.6, "thickness": 0.12},
+    {"id": "kitchen_south", "room_id": "kitchen", "start": [8, 4], "end": [5, 4], "height": 2.6, "thickness": 0.12},
+    {"id": "bedroom_north", "room_id": "bedroom", "start": [0, 4], "end": [4, 4], "height": 2.6, "thickness": 0.12},
+    {"id": "bedroom_west", "room_id": "bedroom", "start": [0, 7], "end": [0, 4], "height": 2.6, "thickness": 0.12},
+    {"id": "bedroom_south", "room_id": "bedroom", "start": [4, 7], "end": [0, 7], "height": 2.6, "thickness": 0.12},
+    {"id": "bathroom_north", "room_id": "bathroom", "start": [4, 4], "end": [8, 4], "height": 2.6, "thickness": 0.12},
+    {"id": "bathroom_east", "room_id": "bathroom", "start": [8, 7], "end": [8, 4], "height": 2.6, "thickness": 0.12},
+    {"id": "bathroom_south", "room_id": "bathroom", "start": [8, 7], "end": [4, 7], "height": 2.6, "thickness": 0.12}
+  ]
+}

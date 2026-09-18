@@ -6,13 +6,19 @@ from pathlib import Path
 from dotenv import load_dotenv
 import streamlit as st
 
+from src.housing.localization import localize_detections
+from src.housing.plan import FloorPlan
+from src.housing.render import render_plan_25d
+from src.housing.store import HousingStore
 from src.pipeline import ChangeDetectionPipeline
+from src.reporting.text import generate_text_report
 
 
 PROJECT_DIR = Path(__file__).parent
 load_dotenv(PROJECT_DIR.parent / ".env")
 load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "configs" / "default.yaml"
+HOUSING_ROOT = PROJECT_DIR / "data" / "housing"
 
 
 @st.cache_resource
@@ -23,52 +29,101 @@ def get_pipeline(dino_weight: float, ssim_weight: float, rgb_weight: float, thre
     return pipeline
 
 
+def all_anomalies(store: HousingStore, property_id: str) -> list[dict]:
+    anomalies = []
+    for report in store.list_reports(property_id):
+        anomalies.extend(item for item in report.get("detected_changes", []) if item.get("location"))
+    return anomalies
+
+
+store = HousingStore(HOUSING_ROOT)
+store.ensure_demo_property()
+properties = store.list_properties()
+
 st.set_page_config(page_title="Property Change Detection", layout="wide")
-st.title("Comparaison d’états des lieux")
-st.caption("Prototype V2 — détection, classification indicative et rapport des changements")
+st.title("États des lieux géolocalisés")
+st.caption("Détection de changements et projection des anomalies sur une représentation 2.5D du logement")
 
 with st.sidebar:
-    st.header("Images")
-    before_file = st.file_uploader("Before", type=["jpg", "jpeg", "png", "webp"])
-    after_file = st.file_uploader("After", type=["jpg", "jpeg", "png", "webp"])
-    st.header("Paramètres")
+    st.header("Logement")
+    property_labels = {item["id"]: item["name"] for item in properties}
+    selected_property = st.selectbox("Logement actif", list(property_labels), format_func=lambda key: property_labels[key])
+    with st.expander("Ajouter un logement"):
+        with st.form("new_property_form"):
+            new_name = st.text_input("Nom du logement")
+            custom_plan = st.file_uploader("Plan JSON optionnel", type=["json"], key="new_plan")
+            submitted = st.form_submit_button("Créer le logement")
+            if submitted and new_name.strip():
+                try:
+                    plan = FloorPlan.from_dict(json.loads(custom_plan.getvalue())) if custom_plan else FloorPlan.sample_house()
+                    store.create_property(new_name.strip(), plan)
+                    st.success("Logement créé. Rechargez la sélection si nécessaire.")
+                    st.rerun()
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                    st.error(f"Plan JSON invalide : {exc}")
+    st.header("Paramètres de comparaison")
     dino_weight = st.slider("Poids DINO", 0.0, 1.0, 0.6, 0.05)
     ssim_weight = st.slider("Poids SSIM", 0.0, 1.0, 0.3, 0.05)
     rgb_weight = st.slider("Poids RGB", 0.0, 1.0, 0.1, 0.05)
     threshold = st.slider("Seuil de changement", 0.0, 1.0, 0.3, 0.05)
     min_area = st.number_input("Surface minimale (pixels)", min_value=1, value=100, step=25)
 
-if not before_file or not after_file:
-    st.info("Chargez une image Before et une image After dans la barre latérale.")
-    st.stop()
+plan = store.load_plan(selected_property)
+anomalies = all_anomalies(store, selected_property)
+plan_tab, compare_tab, history_tab = st.tabs(["Plan 2.5D", "Nouvelle comparaison", "Historique"])
 
-pipeline = get_pipeline(dino_weight, ssim_weight, rgb_weight, threshold, int(min_area))
-with st.spinner("Analyse des images…"):
-    result = pipeline.compare(before_file.getvalue(), after_file.getvalue(), PROJECT_DIR / "outputs")
+with plan_tab:
+    st.subheader(plan.name)
+    st.image(render_plan_25d(plan, anomalies), use_container_width=True)
+    st.caption("La localisation est une projection normalisée sur le mur choisi pour chaque paire d’images. Elle devient métrique après calibration de la prise de vue.")
+    st.dataframe([{"id": wall.id, "room_id": wall.room_id, "length_m": round(wall.length, 2), "height_m": wall.height} for wall in plan.walls], use_container_width=True, hide_index=True)
 
-report = result["report"]
-st.success(f"{len(report['detected_changes'])} changement(s) détecté(s) — surface changée : {report['changed_surface_ratio']:.1%}")
-st.caption(f"Backend features : {report['feature_backend']} | Matches : {report['alignment']['num_matches']} | Inliers : {report['alignment']['num_inliers']}")
-if report.get("feature_backend_warning"):
-    st.warning("Le modèle DINO n’est pas disponible ; le fallback local est utilisé. Vérifiez l’accès Hugging Face puis relancez l’application.")
+with compare_tab:
+    st.subheader("Ajouter une observation")
+    st.write("Chaque paire d’images est conservée dans le dossier du logement et associée à un mur du plan.")
+    before_file = st.file_uploader("Image Before", type=["jpg", "jpeg", "png", "webp"], key="property_before")
+    after_file = st.file_uploader("Image After", type=["jpg", "jpeg", "png", "webp"], key="property_after")
+    observation_id = st.text_input("Identifiant de l’observation", value="inspection_sortie")
+    wall_labels = {wall.id: f"{wall.id} — {wall.room_id}" for wall in plan.walls}
+    wall_id = st.selectbox("Mur observé", list(wall_labels), format_func=lambda key: wall_labels[key])
+    analyze = st.button("Analyser et localiser les différences", type="primary", disabled=not (before_file and after_file))
 
-views = [("Before", "before"), ("After", "after"), ("Before aligné", "aligned_before"), ("Correspondances", "matches"), ("Différence DINOv2", "dino_heatmap"), ("Différence fusionnée", "fused_heatmap"), ("Changements détectés", "detections")]
-columns = st.columns(3)
-for index, (title, key) in enumerate(views):
-    with columns[index % 3]:
-        st.subheader(title)
-        st.image(result["visuals"][key], use_container_width=True)
+    if analyze:
+        pipeline = get_pipeline(dino_weight, ssim_weight, rgb_weight, threshold, int(min_area))
+        property_metadata = next(item for item in properties if item["id"] == selected_property)
+        metadata = {"property_id": selected_property, "observation_id": observation_id, "wall_id": wall_id, "plan_id": plan.id}
+        observation_dir = store.add_observation(selected_property, observation_id, before_file.getvalue(), after_file.getvalue(), metadata)
+        with st.spinner("Alignement, comparaison et localisation sur le plan…"):
+            result = pipeline.compare(before_file.getvalue(), after_file.getvalue(), observation_dir / "outputs")
+        localized = localize_detections(result["detections"], plan, wall_id, result["source_images"]["after"].shape, result["report"]["detected_changes"])
+        result["report"]["property"] = property_metadata
+        result["report"]["observation_id"] = observation_id
+        result["report"]["plan"] = {"id": plan.id, "wall_id": wall_id}
+        result["report"]["detected_changes"] = localized
+        result["text_report"] = generate_text_report(result["report"])
+        store.save_report(observation_dir, result["report"], result["text_report"])
+        st.session_state["last_result"] = result
+        st.session_state["last_property"] = selected_property
+        st.success(f"Observation enregistrée dans {observation_dir.relative_to(PROJECT_DIR)}")
 
-st.subheader("Régions")
-st.dataframe(report["regions"], use_container_width=True, hide_index=True)
-st.subheader("Rapport textuel")
-st.text(result["text_report"])
-download_columns = st.columns(2)
-with download_columns[0]:
-    st.download_button("Télécharger le rapport texte", result["text_report"], "report.txt", "text/plain")
-with download_columns[1]:
-    st.download_button("Télécharger le rapport JSON", json.dumps(report, indent=2, ensure_ascii=False), "report.json", "application/json")
-st.subheader("Classification indicative")
-st.dataframe(report["detected_changes"], use_container_width=True, hide_index=True)
-st.subheader("Rapport JSON")
-st.json(report)
+    last_result = st.session_state.get("last_result") if st.session_state.get("last_property") == selected_property else None
+    if last_result:
+        report = last_result["report"]
+        st.image(render_plan_25d(plan, all_anomalies(store, selected_property)), use_container_width=True)
+        st.success(f"{len(report['detected_changes'])} changement(s) localisé(s) sur {report['plan']['wall_id']}")
+        st.text(last_result["text_report"])
+        st.dataframe(report["detected_changes"], use_container_width=True, hide_index=True)
+        columns = st.columns(3)
+        for index, (title, key) in enumerate([("Before", "before"), ("After", "after"), ("Détections", "detections")]):
+            with columns[index]:
+                st.subheader(title)
+                st.image(last_result["visuals"][key], use_container_width=True)
+
+with history_tab:
+    reports = store.list_reports(selected_property)
+    if not reports:
+        st.info("Aucune observation enregistrée pour ce logement.")
+    for report in reports:
+        with st.expander(report.get("observation_id", "Observation")):
+            st.write(f"{len(report.get('detected_changes', []))} changement(s), seuil {report.get('detection_threshold', '?')}")
+            st.dataframe(report.get("detected_changes", []), use_container_width=True, hide_index=True)
