@@ -7,3 +7,6 @@ __pycache__/
 outputs/*
 !outputs/.gitkeep
 data/housing/*/observations/*/
+data/housing/*/references/
+data/housing/*/scans/
+examples/multiview/

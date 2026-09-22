@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import cv2
+import numpy as np
 import plotly.graph_objects as go
 
 from .plan import FloorPlan
@@ -58,13 +60,56 @@ def _wall_mesh(wall: Any) -> go.Mesh3d:
     )
 
 
-def build_interactive_figure(plan: FloorPlan, anomalies: list[dict[str, Any]] | None = None) -> go.Figure:
+def _coverage_meshes(wall: Any, status: np.ndarray) -> list[go.Mesh3d]:
+    """Draw a coarse, clickable-independent coverage texture on the wall face."""
+    grid = cv2.resize(status, (24, 12), interpolation=cv2.INTER_NEAREST)
+    dx = wall.end[0] - wall.start[0]
+    dy = wall.end[1] - wall.start[1]
+    norm = max(wall.length, 0.001)
+    offset_x, offset_y = -dy / norm * 0.014, dx / norm * 0.014
+    traces = []
+    for value, color, label in ((1, "#f59e0b", "Référence non revue"),
+                                (2, "#22c55e", "Revue dans le nouveau scan")):
+        x: list[float] = []
+        y: list[float] = []
+        z: list[float] = []
+        i: list[int] = []
+        j: list[int] = []
+        k: list[int] = []
+        for row in range(grid.shape[0]):
+            for col in range(grid.shape[1]):
+                if grid[row, col] != value:
+                    continue
+                u0, u1 = col / grid.shape[1], (col + 1) / grid.shape[1]
+                v0, v1 = row / grid.shape[0], (row + 1) / grid.shape[0]
+                for side in (-1, 1):
+                    base = len(x)
+                    for u, v in ((u0, v0), (u1, v0), (u1, v1), (u0, v1)):
+                        x.append(wall.start[0] + u * dx + side * offset_x)
+                        y.append(wall.start[1] + u * dy + side * offset_y)
+                        z.append(wall.height * (1 - v))
+                    i.extend((base, base))
+                    j.extend((base + 1, base + 2))
+                    k.extend((base + 2, base + 3))
+        if x:
+            traces.append(go.Mesh3d(x=x, y=y, z=z, i=i, j=j, k=k, color=color,
+                                    opacity=0.9, flatshading=True, name=label,
+                                    hovertemplate=f"<b>{wall.id}</b><br>{label}<extra></extra>",
+                                    showlegend=False))
+    return traces
+
+
+def build_interactive_figure(plan: FloorPlan, anomalies: list[dict[str, Any]] | None = None,
+                             coverage: dict[str, np.ndarray] | None = None) -> go.Figure:
     """Build the freely navigable 3D plan and clickable anomaly markers."""
     figure = go.Figure()
     for index, room in enumerate(plan.rooms):
         figure.add_trace(_floor_mesh(room, index))
     for wall in plan.walls:
         figure.add_trace(_wall_mesh(wall))
+        if coverage and wall.id in coverage:
+            for trace in _coverage_meshes(wall, coverage[wall.id]):
+                figure.add_trace(trace)
 
     for room in plan.rooms:
         center_x = sum(point[0] for point in room.polygon) / len(room.polygon)

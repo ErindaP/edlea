@@ -67,6 +67,27 @@ Cette localisation est une première approximation : elle suppose que l’image 
 
 Dans l’onglet `Plan 2.5D` ou `Nouvelle comparaison`, le plan peut être pivoté, déplacé et zoomé. Un clic sur une face de mur sélectionne automatiquement son identifiant ; les images ajoutées dans `Nouvelle comparaison` sont alors associées à ce mur. Un clic sur un marqueur rouge ouvre les images Avant, Après et Détections de la comparaison correspondante.
 
+## Scan multivue et couverture (branche `multivue-couverture`)
+
+L’onglet `Scan multivue` accepte plusieurs photos **de référence** par logement et un nombre libre de photos par nouveau relevé. Pour chaque référence, indiquez le mur, la portion du mur `(u0,v0,u1,v1)` et, si la photo n’est pas déjà recadrée sur ce mur, les quatre coins du mur dans l’image (coordonnées normalisées entre 0 et 1, dans l’ordre haut-gauche, haut-droit, bas-droit, bas-gauche). La valeur par défaut `0,0;1,0;1,1;0,1` suppose que *toute la photo est une seule face de mur* ; elle n’est pas adaptée à une vue de pièce montrant plusieurs murs, sol et plafond.
+
+Les nouvelles photos sont automatiquement rapprochées des références au moyen de points locaux SIFT (ou ORB si indisponible), puis d’une homographie vérifiée par RANSAC. L’application refuse les correspondances faibles, trop concentrées ou ambiguës entre murs. Elle projette les zones reconnues sur une grille commune par mur : vert = vu dans le nouveau scan, orange = présent dans la référence mais non revu, gris = pas de référence. Les comparaisons de pixels/SSIM, leurs boîtes et images rectifiées sont indépendantes du rapport LLM et disponibles directement. Les points rouges du plan ouvrent les trois images comparées.
+
+Le pourcentage est `surface de mur référencée et revue / surface de mur référencée` ; les photos superposées sont fusionnées sans double compte. Les surfaces absentes des références, ainsi que les sols et plafonds, n’entrent pas dans ce calcul. Le pourcentage représente donc la **couverture des références murales**, et non celle du logement complet. Les photos non localisées ne sont pas comptées. Les approximations de surfaces en m² dépendent de la justesse du plan et de la calibration des références.
+
+Les données sont persistées dans `data/housing/<logement>/references/<ref_id>/` et `data/housing/<logement>/scans/<scan_id>/` (photos, métadonnées, `coverage.json`, atlas, cartes et détections). Les anciens relevés restent consultables depuis le nouvel onglet ; le dernier scan colore également le plan principal. Ces dossiers sont ignorés par Git pour ne pas publier des photos de logement par inadvertance.
+
+### Exemple reproductible
+
+```bash
+.venv/bin/python scripts/prepare_multiview_demo.py
+.venv/bin/streamlit run app.py
+```
+
+Le script télécharge une [photographie d’un mur intérieur par Mia Gaitanidis](https://commons.wikimedia.org/wiki/File:Brick_wall,_inside.jpg), sous [licence CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), puis crée dans `examples/multiview/` des vues perspectivées synthétiques et une version avec une marque ajoutée numériquement. Cliquez sur **« Charger l’exemple multivue dans ce logement »** dans le nouvel onglet pour créer la référence et le scan automatiquement. Vous pouvez aussi ajouter `reference.jpg` sur `living_east` avec les valeurs de calibration par défaut, puis créer un scan avec **`scan_gauche.jpg` et `scan_marque.jpg`**. Le résultat attendu dans cette démonstration est environ 88 % de couverture et une variation visuelle près du centre du mur. `scan_droite.jpg` est une vue supplémentaire *sans* la marque ; elle sert à tester la couverture seule, et ne doit pas être mêlée à `scan_marque.jpg` si l’on veut simuler un seul état cohérent. Les images produites sont des transformations d’une même photographie : elles valident le recalage et le calcul, **pas** les performances sur des prises de vue indépendantes dans un logement réel.
+
+Limites : une homographie est pertinente pour une face approximativement plane et des vues qui se recouvrent. Mobilier, occultations, surfaces uniformes, forts changements d’éclairage ou absence de recouvrement peuvent rendre la couverture ou les différences peu fiables. Les variations sont indicatives, pas une classification de dégradations. Pour une couverture réellement complète, il faudra des références pour tous les murs puis étendre la méthode aux sols/plafonds et, si nécessaire, à la profondeur ou à la pose caméra.
+
 ## Tests rapides
 
 ```bash

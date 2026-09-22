@@ -5,12 +5,15 @@ from pathlib import Path
 from uuid import uuid4
 
 from dotenv import load_dotenv
+import numpy as np
+from PIL import Image
 import streamlit as st
 import streamlit.components.v2 as components_v2
 
 from src.housing.interactive import build_interactive_figure
 from src.housing.localization import localize_detections
 from src.housing.plan import FloorPlan
+from src.housing.multiview import ReferenceView, analyze_scan
 from src.housing.store import HousingStore
 from src.pipeline import ChangeDetectionPipeline
 from src.reporting.text import generate_text_report
@@ -138,6 +141,30 @@ def all_anomalies(store: HousingStore, property_id: str) -> list[dict]:
     return anomalies
 
 
+def latest_scan_data(store: HousingStore, property_id: str, plan: FloorPlan) -> tuple[dict | None, dict, list[dict]]:
+    latest = next((item for item in store.list_scans(property_id) if item.get("coverage")), None)
+    if not latest:
+        return None, {}, []
+    coverage = latest["coverage"]
+    masks = {}
+    changes = []
+    for wall_id, wall_data in coverage.get("walls", {}).items():
+        status_path = Path(latest["directory"]) / wall_data["status_path"]
+        if status_path.is_file():
+            masks[wall_id] = np.asarray(Image.open(status_path).convert("L"))
+        try:
+            wall = plan.wall(wall_id)
+        except KeyError:
+            continue
+        for change in wall_data.get("changes", []):
+            changes.append({"id": change["id"], "type": "variation visuelle",
+                            "confidence": change["score"], "observation_id": latest["id"],
+                            "scan_id": latest["id"],
+                            "location": {"wall_id": wall_id, "room_id": wall.room_id,
+                                         "u": change["u"], "z_m": wall.height * (1 - change["v"])}})
+    return latest, masks, changes
+
+
 @st.dialog("Détail de la comparaison", width="large")
 def show_anomaly_dialog(anomaly: dict, media: dict[str, Path]) -> None:
     location = anomaly.get("location", {})
@@ -179,8 +206,9 @@ def interactive_plan_3d(
     key: str,
     height: int,
     allow_wall_selection: bool = False,
+    coverage: dict[str, np.ndarray] | None = None,
 ) -> str | None:
-    figure = build_interactive_figure(plan, anomalies)
+    figure = build_interactive_figure(plan, anomalies, coverage)
     figure.update_layout(height=height)
     st.plotly_chart(
         figure,
@@ -213,7 +241,11 @@ def interactive_plan_3d(
         if st.session_state.get("last_anomaly_popup") != popup_token:
             st.session_state["last_anomaly_popup"] = popup_token
             observation_id = str(anomaly.get("observation_id", ""))
-            show_anomaly_dialog(anomaly, store.observation_media(property_id, observation_id))
+            if anomaly.get("scan_id"):
+                media = store.scan_change_media(property_id, observation_id, anomaly["location"]["wall_id"])
+            else:
+                media = store.observation_media(property_id, observation_id)
+            show_anomaly_dialog(anomaly, media)
 
     if allow_wall_selection and customdata.startswith("wall:"):
         wall_id = customdata.split(":", maxsplit=1)[1]
@@ -279,20 +311,25 @@ with st.sidebar:
 
 plan = store.load_plan(selected_property)
 anomalies = all_anomalies(store, selected_property)
-plan_tab, compare_tab, history_tab = st.tabs(["Plan 2.5D", "Nouvelle comparaison", "Historique"])
+latest_scan, coverage_masks, scan_changes = latest_scan_data(store, selected_property, plan)
+plan_tab, compare_tab, scan_tab, history_tab = st.tabs(["Plan 2.5D", "Nouvelle comparaison", "Scan multivue", "Historique"])
 
 with plan_tab:
     st.subheader(plan.name)
     interactive_plan_3d(
         plan,
-        anomalies,
+        anomalies + scan_changes,
         store,
         selected_property,
         key=f"overview-{selected_property}",
         height=720,
+        coverage=coverage_masks,
     )
     st.caption("Rotation : clic gauche + déplacement · Zoom : molette · Déplacement : outil Pan de la barre. Cliquez sur un point rouge pour afficher les images de la comparaison.")
     st.caption("La localisation est une projection normalisée sur le mur choisi pour chaque paire d’images. Elle devient métrique après calibration de la prise de vue.")
+    if latest_scan:
+        st.caption(f"Dernier scan multivue : {latest_scan['name']} · Couverture des surfaces de référence : "
+                   f"{latest_scan['coverage']['coverage_percent']:.1f} %. Vert : revu · Orange : non revu · Gris : non référencé.")
     st.dataframe([{"id": wall.id, "room_id": wall.room_id, "length_m": round(wall.length, 2), "height_m": wall.height} for wall in plan.walls], width="stretch", hide_index=True)
 
 with compare_tab:
@@ -391,6 +428,144 @@ with compare_tab:
             report["run_id"],
             str(report.get("observation_id", "observation")),
         )
+
+with scan_tab:
+    st.subheader("Références et nouveau relevé multivue")
+    st.caption("Prototype pour murs plans : des vues différentes et un nombre libre de photos sont acceptés si elles se recouvrent visuellement. "
+               "La couverture est calculée uniquement sur les parties référencées des murs, pas sur les pièces entières.")
+    demo_dir = PROJECT_DIR / "examples" / "multiview"
+    demo_names = ("reference.jpg", "scan_gauche.jpg", "scan_marque.jpg")
+    demo_ready = all((demo_dir / filename).is_file() for filename in demo_names)
+    if st.button("Charger l’exemple multivue dans ce logement", disabled=not demo_ready,
+                 help="Exécutez d’abord .venv/bin/python scripts/prepare_multiview_demo.py"):
+        try:
+            demo_wall = "living_east" if any(wall.id == "living_east" for wall in plan.walls) else plan.walls[0].id
+            demo_reference = store.add_reference(selected_property, demo_wall, (demo_dir / "reference.jpg").read_bytes(),
+                                                 (0.0, 0.0, 1.0, 1.0),
+                                                 ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)),
+                                                 "Exemple Wikimedia Commons")
+            scan_dir, scan_records = store.add_scan(
+                selected_property, "Exemple multivue", [(name, (demo_dir / name).read_bytes()) for name in demo_names[1:]],
+            )
+            reference_view = ReferenceView(demo_reference["id"], demo_wall,
+                                           np.asarray(Image.open(demo_dir / "reference.jpg").convert("RGB")))
+            scan_views = [(record["id"], np.asarray(Image.open(record["image_path"]).convert("RGB")))
+                          for record in scan_records]
+            with st.spinner("Analyse de l’exemple…"):
+                store.save_scan_result(scan_dir, analyze_scan(plan, [reference_view], scan_views))
+            st.rerun()
+        except (ValueError, OSError) as exc:
+            st.error(f"Impossible de charger l’exemple : {exc}")
+    if demo_ready:
+        st.caption("Source et licence : examples/multiview/SOURCE.txt. Les nouvelles vues sont simulées à partir de la photo source.")
+    with st.expander("1. Ajouter une photo de référence", expanded=not store.list_references(selected_property)):
+        with st.form(f"reference-form-{selected_property}"):
+            reference_file = st.file_uploader("Photo de référence", type=["jpg", "jpeg", "png", "webp"], key="multiview_reference")
+            reference_wall = st.selectbox("Mur représenté", [wall.id for wall in plan.walls], key="reference_wall")
+            st.caption("Portion du mur couverte par les quatre coins indiqués dans la photo. "
+                       "u va de gauche à droite ; v va du plafond au sol.")
+            bounds_columns = st.columns(4)
+            with bounds_columns[0]:
+                u0 = st.number_input("u début", 0.0, 1.0, 0.0, 0.05)
+            with bounds_columns[1]:
+                v0 = st.number_input("v haut", 0.0, 1.0, 0.0, 0.05)
+            with bounds_columns[2]:
+                u1 = st.number_input("u fin", 0.0, 1.0, 1.0, 0.05)
+            with bounds_columns[3]:
+                v1 = st.number_input("v bas", 0.0, 1.0, 1.0, 0.05)
+            corners_text = st.text_input("Coins du mur dans l’image (haut-gauche ; haut-droit ; bas-droit ; bas-gauche)",
+                                         value="0,0;1,0;1,1;0,1",
+                                         help="Coordonnées image normalisées entre 0 et 1. Le défaut suppose une photo recadrée sur le mur.")
+            reference_submitted = st.form_submit_button("Enregistrer la référence")
+            if reference_submitted:
+                try:
+                    if reference_file is None:
+                        raise ValueError("Sélectionnez une photo.")
+                    corners = tuple(tuple(float(value.strip()) for value in pair.split(","))
+                                    for pair in corners_text.split(";"))
+                    store.add_reference(selected_property, reference_wall, reference_file.getvalue(),
+                                        (u0, v0, u1, v1), corners, reference_file.name)
+                    st.success("Photo de référence enregistrée.")
+                    st.rerun()
+                except (ValueError, TypeError, OSError) as exc:
+                    st.error(f"Calibration invalide : {exc}")
+    references = store.list_references(selected_property)
+    if references:
+        st.dataframe([{"Photo": ref["source_name"] or ref["id"], "Mur": ref["wall_id"],
+                       "Portion (u0,v0,u1,v1)": ref["bounds"], "ID": ref["id"]} for ref in references],
+                     width="stretch", hide_index=True)
+    else:
+        st.info("Ajoutez une photo de référence pour démarrer. Recadrez-la sur un mur ou renseignez ses quatre coins.")
+
+    st.markdown("#### 2. Nouveau scan")
+    scan_name = st.text_input("Nom du relevé", value="nouvel_etat")
+    scan_files = st.file_uploader("Photos du nouveau relevé (nombre libre)",
+                                  type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True,
+                                  key="multiview_scan")
+    coverage_threshold = st.slider("Seuil des variations visuelles multivues", 0.1, 0.9, 0.32, 0.02)
+    run_scan = st.button("Calculer la couverture et comparer", type="primary",
+                         disabled=not (references and scan_files))
+    if run_scan:
+        try:
+            reference_views = [ReferenceView(ref["id"], ref["wall_id"],
+                                             np.asarray(Image.open(ref["image_path"]).convert("RGB")),
+                                             tuple(ref["bounds"]), tuple(tuple(pair) for pair in ref["image_quad"]))
+                               for ref in references]
+            with st.spinner("Recalage des photos et calcul de couverture…"):
+                scan_dir, scan_records = store.add_scan(selected_property, scan_name,
+                                                        [(item.name, item.getvalue()) for item in scan_files])
+                result = analyze_scan(plan, reference_views,
+                                      [(record["id"], np.asarray(Image.open(record["image_path"]).convert("RGB")))
+                                       for record in scan_records], threshold=coverage_threshold)
+                store.save_scan_result(scan_dir, result)
+            st.success(f"Scan enregistré : {scan_dir.relative_to(PROJECT_DIR)}")
+            st.rerun()
+        except (ValueError, OSError) as exc:
+            st.error(f"Le scan n’a pas pu être analysé : {exc}")
+
+    scans = [item for item in store.list_scans(selected_property) if item.get("coverage")]
+    if scans:
+        scan_ids = [item["id"] for item in scans]
+        selected_scan_id = st.selectbox("Scan à consulter", scan_ids,
+                                         format_func=lambda key: next(f"{item['name']} · {item['created_at'][:19]}"
+                                                                      for item in scans if item["id"] == key))
+        selected_scan = next(item for item in scans if item["id"] == selected_scan_id)
+        summary = selected_scan["coverage"]
+        st.metric("Couverture des surfaces de référence", f"{summary['coverage_percent']:.1f} %",
+                  help="Somme des surfaces de mur revues divisée par la somme des surfaces de mur référencées.")
+        st.caption(f"Surface référencée : {summary['reference_area_m2']:.2f} m² · "
+                   f"Surface revue : {summary['scanned_area_m2']:.2f} m². Les surfaces non référencées sont exclues.")
+        registration_rows = summary.get("registrations", [])
+        st.dataframe(registration_rows, width="stretch", hide_index=True)
+        if any(row["status"] != "localisee" for row in registration_rows):
+            st.warning("Certaines photos n’ont pas été localisées avec assez de certitude ; elles ne sont pas comptées dans la couverture.")
+        statuses = {}
+        scan_markers = []
+        for wall_key, wall_data in summary["walls"].items():
+            path = Path(selected_scan["directory"]) / wall_data["status_path"]
+            if path.is_file():
+                statuses[wall_key] = np.asarray(Image.open(path).convert("L"))
+            wall = plan.wall(wall_key)
+            for change in wall_data.get("changes", []):
+                scan_markers.append({"id": change["id"], "type": "variation visuelle", "confidence": change["score"],
+                                     "observation_id": selected_scan_id, "scan_id": selected_scan_id,
+                                     "location": {"wall_id": wall_key, "room_id": wall.room_id,
+                                                  "u": change["u"], "z_m": wall.height * (1 - change["v"])}})
+        interactive_plan_3d(plan, scan_markers, store, selected_property,
+                            key=f"scan-plan-{selected_property}-{selected_scan_id}", height=650, coverage=statuses)
+        st.caption("Vert : revu · Orange : référence non revue · Gris : absence de référence. Cliquez sur un point rouge pour voir les comparaisons.")
+        for wall_key, wall_data in summary["walls"].items():
+            with st.expander(f"{wall_key} — {wall_data['coverage_percent']:.1f} % couverts · "
+                             f"{len(wall_data['changes'])} variation(s)"):
+                paths = store.scan_change_media(selected_property, selected_scan_id, wall_key)
+                for column, (label, path) in zip(st.columns(3),
+                                                 [("Référence rectifiée", paths["before"]),
+                                                  ("Nouveau scan rectifié", paths["after"]),
+                                                  ("Variations indicatives", paths["detections"])]):
+                    with column:
+                        if path.is_file():
+                            st.image(path, caption=label, width="stretch")
+                st.dataframe(wall_data["changes"], width="stretch", hide_index=True)
 
 with history_tab:
     reports = store.list_reports(selected_property)
