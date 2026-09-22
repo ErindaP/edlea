@@ -33,9 +33,13 @@ La segmentation V1 est une abstraction heuristique (`Segmenter`) produisant `wal
 
 La branche `rapport` ajoute une classification explicable après la détection. Pour chaque bounding box, le système calcule la forme, l’élongation, le remplissage, la compacité, la texture, les contours et l’intensité du changement. Des règles prudentes proposent `crack`, `impact`, `stain_or_dirt`, `object_change`, `paint_peeling` ou `unknown`, avec une confiance, une sévérité indicative et des éléments de preuve. Les zones ambiguës restent `unknown`.
 
-Le rapport texte est une synthèse visuelle et non une expertise : il ne conclut ni à la responsabilité, ni au coût, ni à la nature certaine d’un dommage.
+La comparaison et ses sorties (`outputs/detections.png`, cartes de distance/changement, `report.json`, `report.txt`) sont enregistrées et affichées dès la fin de la détection. Ensuite seulement, une tâche locale facultative compare les images Avant/Après avec `Qwen/Qwen3-VL-2B-Instruct`. Elle s’exécute en arrière-plan et écrit **séparément** `llm_report.json` et `llm_report.txt`. L’interface actualise son statut pendant que les images restent consultables. Ce VLM occupe environ 4,3 Go sur disque, fonctionne sur la RTX 5070 Ti 12 Go et n’envoie pas les photos vers une API. Son premier lancement télécharge les poids dans le cache Hugging Face. Il peut être désactivé ou remplacé dans la barre latérale.
 
-Pour les fissures et rayures, l’ouverture morphologique est désactivée par défaut : une ouverture carrée `5x5` risquerait de supprimer une ligne fine. Le seuil V2 par défaut est `0.3`; il reste réglable dans l’interface. Le rapport indique aussi le score maximal observé lorsqu’aucune composante ne passe les filtres.
+Le contexte VLM contient le nombre total de zones, un décompte par type et au plus trois exemples prioritaires ; il ne liste pas toutes les bounding boxes. La sortie brute est conservée dans `llm_report.json` (`raw_text`) pour audit. Le texte présenté passe par un garde-fou : les affirmations non observables sur une photo 2D, comme la profondeur ou la solidité, sont retirées. Pour une surface modifiée très faible, la synthèse parle d’une variation locale à confirmer au lieu d’affirmer une aggravation globale.
+
+Le rapport texte reste une synthèse visuelle et non une expertise : il ne conclut ni à la responsabilité, ni au coût, ni à la nature certaine d’un dommage.
+
+Pour les fissures et rayures, l’ouverture morphologique est désactivée par défaut : une ouverture carrée `5x5` risquerait de supprimer une ligne fine. Le seuil fort par défaut est `0.3`. Une hystérésis à `0.35 × seuil` étend ensuite chaque graine fiable aux portions plus faibles mais connectées. Cela produit des boîtes couvrant mieux les défauts fins sans transformer tout le bruit faible en détection. Les deux paramètres restent réglables dans l’interface. Le rapport indique aussi le score maximal observé lorsqu’aucune composante ne passe les filtres.
 
 ## Logements et plan 2.5D
 
@@ -51,6 +55,8 @@ data/housing/<logement>/
     ├── metadata.json
     ├── report.json
     ├── report.txt
+    ├── llm_report.json (si l’analyse locale est activée)
+    ├── llm_report.txt  (si l’analyse locale est activée)
     ├── outputs/
     └── anomalies/
 ```
@@ -59,7 +65,7 @@ Le logement de démonstration contient un plan synthétique de quatre pièces et
 
 Cette localisation est une première approximation : elle suppose que l’image couvre principalement le mur sélectionné. Une calibration par points correspondants ou une estimation de pose caméra sera nécessaire pour obtenir une localisation métrique précise.
 
-Dans l’onglet `Plan 2.5D` ou `Nouvelle comparaison`, le plan est cliquable. Un clic sur une face de mur sélectionne automatiquement son identifiant ; les images ajoutées dans `Nouvelle comparaison` sont alors associées à ce mur. Le rendu est centré automatiquement dans sa zone d’affichage.
+Dans l’onglet `Plan 2.5D` ou `Nouvelle comparaison`, le plan peut être pivoté, déplacé et zoomé. Un clic sur une face de mur sélectionne automatiquement son identifiant ; les images ajoutées dans `Nouvelle comparaison` sont alors associées à ce mur. Un clic sur un marqueur rouge ouvre les images Avant, Après et Détections de la comparaison correspondante.
 
 ## Tests rapides
 

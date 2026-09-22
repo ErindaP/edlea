@@ -2,11 +2,11 @@
 numpy>=1.26,<3
 opencv-python-headless>=4.10
 Pillow>=10.0
+plotly>=6.0,<7
 PyYAML>=6.0
 python-dotenv>=1.0
 scikit-image>=0.24
-streamlit>=1.40
-streamlit-image-coordinates==0.4.1
+streamlit>=1.63,<2
 
 # DINOv2/DINOv3 backend for the RTX 5070 Ti Laptop.
 --extra-index-url https://download.pytorch.org/whl/cu128

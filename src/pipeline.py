@@ -26,7 +26,9 @@ def _default_config() -> dict[str, Any]:
     return {"image": {"max_size": 1280}, "alignment": {"method": "auto", "min_matches": 8, "ratio_test": 0.75},
             "features": {"backend": "auto", "model_name": "facebook/dinov2-base", "local_files_only": False, "image_size": 518},
             "comparison": {"dino_weight": 0.6, "ssim_weight": 0.3, "rgb_weight": 0.1},
-            "detection": {"threshold": 0.3, "min_area": 100, "morph_kernel": 5, "opening_kernel": 0}, "outputs": {"directory": "outputs"}}
+            "detection": {"threshold": 0.3, "min_area": 100, "morph_kernel": 5, "opening_kernel": 0,
+                          "hysteresis_ratio": 0.35},
+            "outputs": {"directory": "outputs"}}
 
 
 class ChangeDetectionPipeline:
@@ -68,7 +70,8 @@ class ChangeDetectionPipeline:
         detection_cfg = self.config.get("detection", {})
         threshold = detection_cfg.get("threshold", 0.4)
         detections = detect_changes(fused_map, masks, threshold, detection_cfg.get("min_area", 100),
-                                    detection_cfg.get("morph_kernel", 5), detection_cfg.get("opening_kernel", 0))
+                                    detection_cfg.get("morph_kernel", 5), detection_cfg.get("opening_kernel", 0),
+                                    detection_cfg.get("hysteresis_ratio", 0.35))
         classified_changes = []
         for detection in detections:
             classification = self.classifier.classify(alignment.aligned_before, after_image, fused_map, detection)

@@ -18,6 +18,8 @@ detection:
   min_area: 100
   morph_kernel: 5
   opening_kernel: 0
+  # Grow reliable high-score seeds into connected, weaker parts of thin defects.
+  hysteresis_ratio: 0.35
 segmentation:
   backend: heuristic
 outputs:

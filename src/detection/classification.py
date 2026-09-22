@@ -54,11 +54,18 @@ def extract_anomaly_features(before: np.ndarray, after: np.ndarray, change_map: 
     edge_density = float(edges.mean() / 255.0) if edges.size else 0.0
     area_ratio_bbox = mask_area / float(width * height)
     aspect_ratio = max(width, height) / float(min(width, height))
+    coordinates = np.column_stack(np.nonzero(mask)).astype(np.float32)
+    if len(coordinates) >= 3:
+        eigenvalues = np.linalg.eigvalsh(np.cov(coordinates, rowvar=False))
+        pca_elongation = float(np.sqrt(max(eigenvalues[-1], 0.0) / max(eigenvalues[0], 1e-6)))
+    else:
+        pca_elongation = 1.0
     feature_change = float(np.mean(changed_pixels)) if changed_pixels.size else float(np.mean(crop_change))
     return {
         "bbox_width": float(width),
         "bbox_height": float(height),
         "aspect_ratio": float(aspect_ratio),
+        "pca_elongation": pca_elongation,
         "mask_fill_ratio": float(area_ratio_bbox),
         "compactness": float(np.clip(compactness, 0.0, 1.0)),
         "feature_change": feature_change,
@@ -76,14 +83,16 @@ class AnomalyClassifier:
                  detection: DetectedChange) -> AnomalyClassification:
         features = extract_anomaly_features(before, after, change_map, detection)
         aspect = features["aspect_ratio"]
+        elongation = max(aspect, features["pca_elongation"])
         fill = features["mask_fill_ratio"]
         compactness = features["compactness"]
         feature_change = features["feature_change"]
         evidence: list[str] = []
         candidates: list[tuple[str, float, list[str]]] = []
 
-        if aspect >= 4.0 and (fill <= 0.65 or detection.score >= 0.65):
-            candidates.append(("crack", 0.60 + min(0.22, (aspect - 4.0) * 0.04), ["forme très allongée", "zone peu remplie dans sa bounding box"]))
+        if elongation >= 4.0 and (fill <= 0.65 or detection.score >= 0.65):
+            candidates.append(("crack", 0.60 + min(0.22, (elongation - 4.0) * 0.04),
+                               ["distribution très allongée des pixels modifiés", "zone peu remplie dans sa bounding box"]))
         if compactness >= 0.45 and fill >= 0.45 and feature_change >= 0.45:
             candidates.append(("impact", 0.55 + min(0.25, feature_change * 0.25), ["zone compacte", "contraste local important"]))
         if compactness >= 0.20 and fill >= 0.35 and features["texture"] <= 0.35:

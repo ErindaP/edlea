@@ -6,3 +6,4 @@ __pycache__/
 .streamlit/
 outputs/*
 !outputs/.gitkeep
+data/housing/*/observations/*/

@@ -24,10 +24,11 @@ def generate_text_report(report: dict[str, Any]) -> str:
                       f"seuil {threshold:.2f}), mais aucune composante n’a dépassé le filtre de surface ou de morphologie.")
         else:
             detail = f"Le score maximal observé est {max_score:.2f}, inférieur au seuil de {threshold:.2f}."
-        return ("État des lieux comparé automatiquement.\n\n"
+        deterministic = ("État des lieux comparé automatiquement.\n\n"
                 "Aucune zone de différence exploitable n’a été détectée avec les paramètres actuels.\n"
                 f"{detail}\n\n"
                 "Ce résultat reste une aide à la vérification visuelle.")
+        return _append_global_analysis(deterministic, report)
     types = Counter(change.get("type", "unknown") for change in changes)
     summary = ", ".join(f"{count} {TYPE_LABELS.get(kind, kind)}" for kind, count in types.items())
     lines = [
@@ -54,4 +55,17 @@ def generate_text_report(report: dict[str, Any]) -> str:
         "",
         "Limites : ce rapport décrit des différences visuelles et ne constitue pas une expertise, une attribution de responsabilité ou une estimation financière.",
     ])
-    return "\n".join(lines)
+    return _append_global_analysis("\n".join(lines), report)
+
+
+def _append_global_analysis(text: str, report: dict[str, Any]) -> str:
+    analysis = report.get("global_visual_analysis", {})
+    if analysis.get("status") != "success" or not analysis.get("text"):
+        return text
+    return (
+        f"{text}\n\n"
+        "Analyse visuelle globale — modèle local\n"
+        "=" * 40 + "\n\n"
+        f"{analysis['text']}\n\n"
+        "Cette synthèse générée doit être confirmée par une vérification humaine."
+    )

@@ -21,28 +21,40 @@ def regional_statistics(change_map: np.ndarray, masks: list[Mask], threshold: fl
 
 
 def detect_changes(change_map: np.ndarray, masks: list[Mask], threshold: float = 0.4,
-                   min_area: int = 150, morph_kernel: int = 5, opening_kernel: int = 0) -> list[DetectedChange]:
-    binary = (change_map > threshold).astype(np.uint8)
+                   min_area: int = 150, morph_kernel: int = 5, opening_kernel: int = 0,
+                   hysteresis_ratio: float = 0.35) -> list[DetectedChange]:
+    """Detect strong changes, then grow them into connected low-confidence pixels.
+
+    The two-threshold strategy keeps isolated low-score noise out while avoiding
+    tiny boxes around long, thin defects whose score is not uniform everywhere.
+    """
+    strong = (change_map > threshold).astype(np.uint8)
+    low_threshold = float(threshold) * float(np.clip(hysteresis_ratio, 0.05, 1.0))
+    binary = (change_map > low_threshold).astype(np.uint8)
     # An opening with a square 5x5 kernel erases thin cracks. Keep it disabled
     # by default and use the minimum-area filter for isolated noise instead.
     opening_size = int(opening_kernel)
     if opening_size > 1:
         opening = np.ones((opening_size, opening_size), dtype=np.uint8)
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, opening)
+        strong = cv2.morphologyEx(strong, cv2.MORPH_OPEN, opening)
     closing_size = int(morph_kernel)
     if closing_size > 1:
         closing = np.ones((closing_size, closing_size), dtype=np.uint8)
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, closing)
+        strong = cv2.morphologyEx(strong, cv2.MORPH_CLOSE, closing)
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
     image_area = change_map.shape[0] * change_map.shape[1]
     detections: list[DetectedChange] = []
     next_id = 1
     for label_id in range(1, num_labels):
-        area = int(stats[label_id, cv2.CC_STAT_AREA])
-        if area < min_area:
-            continue
         component = labels == label_id
-        score = float(change_map[component].mean())
+        strong_component = np.logical_and(component, strong.astype(bool))
+        strong_area = int(strong_component.sum())
+        if strong_area < min_area:
+            continue
+        area = int(stats[label_id, cv2.CC_STAT_AREA])
+        score = float(change_map[strong_component].mean())
         surface, best_overlap = "other", 0
         for region in masks:
             overlap = int(np.logical_and(component, region.binary_mask).sum())
