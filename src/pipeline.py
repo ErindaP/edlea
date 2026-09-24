@@ -8,6 +8,7 @@ import numpy as np
 import yaml
 from PIL import Image
 
+from .alignment.coverage import analyze_pair_coverage
 from .alignment.matcher import OpenCVMatcher, RegistrationBackend
 from .comparison.feature import compute_feature_change_map
 from .comparison.fusion import compute_fused_change_map
@@ -18,7 +19,6 @@ from .features.dinov3 import DinoFeatureExtractor
 from .image_io import load_image, match_size
 from .reporting.text import generate_text_report
 from .segmentation.segmenter import HeuristicSegmenter, Segmenter
-from .types import AlignmentResult
 from .visualization.overlays import render_detections, render_heatmap, render_matches
 
 
@@ -52,10 +52,18 @@ class ChangeDetectionPipeline:
         with open(path, encoding="utf-8") as handle:
             return cls(config=yaml.safe_load(handle))
 
-    def compare(self, before: Any, after: Any, output_dir: str | Path | None = None) -> dict[str, Any]:
+    def compare(self, before: Any, after: Any, output_dir: str | Path | None = None,
+                *, coverage_analysis: bool = False) -> dict[str, Any]:
         max_size = self.config.get("image", {}).get("max_size", 1280)
-        before_image, after_image = match_size(load_image(before, max_size), load_image(after, max_size))
-        alignment: AlignmentResult = self.matcher.register(before_image, after_image)
+        before_image = load_image(before, max_size)
+        after_image = load_image(after, max_size)
+        coverage_result = None
+        if coverage_analysis:
+            coverage_result = analyze_pair_coverage(before_image, after_image)
+            alignment = coverage_result.alignment
+        else:
+            before_image, after_image = match_size(before_image, after_image)
+            alignment = self.matcher.register(before_image, after_image)
         features_before = self.feature_extractor.extract(alignment.aligned_before)
         features_after = self.feature_extractor.extract(after_image)
         dino_map = compute_feature_change_map(features_before, features_after, after_image.shape[:2])
@@ -71,25 +79,36 @@ class ChangeDetectionPipeline:
         threshold = detection_cfg.get("threshold", 0.4)
         detections = detect_changes(fused_map, masks, threshold, detection_cfg.get("min_area", 100),
                                     detection_cfg.get("morph_kernel", 5), detection_cfg.get("opening_kernel", 0),
-                                    detection_cfg.get("hysteresis_ratio", 0.35))
+                                    detection_cfg.get("hysteresis_ratio", 0.35),
+                                    alignment.valid_mask if coverage_analysis else None)
         classified_changes = []
         for detection in detections:
             classification = self.classifier.classify(alignment.aligned_before, after_image, fused_map, detection)
             item = detection.to_dict()
             item.update(classification.to_dict())
             classified_changes.append(item)
-        report = {"alignment": {"success": alignment.success, "method": "opencv_orb_homography", "num_matches": alignment.num_matches, "num_inliers": alignment.num_inliers},
+        comparable_values = fused_map[alignment.valid_mask] if coverage_analysis else fused_map.ravel()
+        report = {"alignment": {"success": alignment.success,
+                                "method": coverage_result.matching_backend if coverage_result else "opencv_orb_homography",
+                                "num_matches": alignment.num_matches, "num_inliers": alignment.num_inliers},
                   "feature_backend": self.feature_extractor.backend_name,
                   "feature_backend_warning": getattr(self.feature_extractor, "load_error", None),
-                  "global_change_score": round(float(fused_map.mean()), 6),
-                  "max_change_score": round(float(fused_map.max()), 6),
+                  "global_change_score": round(float(comparable_values.mean()), 6),
+                  "max_change_score": round(float(comparable_values.max()), 6),
                   "detection_threshold": threshold,
-                  "changed_surface_ratio": round(float(np.mean(fused_map > threshold)), 6),
-                  "regions": regional_statistics(fused_map, masks, threshold), "detected_changes": classified_changes}
+                  "changed_surface_ratio": round(float(np.mean(comparable_values > threshold)), 6),
+                  "regions": regional_statistics(
+                      fused_map, masks, threshold,
+                      alignment.valid_mask if coverage_analysis else None,
+                  ), "detected_changes": classified_changes}
+        if coverage_result:
+            report["pair_coverage"] = coverage_result.to_dict()
         text_report = generate_text_report(report)
         visuals = {"before": before_image, "after": after_image, "aligned_before": alignment.aligned_before,
                    "matches": render_matches(before_image, after_image, alignment), "dino_heatmap": render_heatmap(dino_map, after_image),
                    "fused_heatmap": render_heatmap(fused_map, after_image), "detections": render_detections(after_image, detections)}
+        if coverage_result:
+            visuals["coverage_overlay"] = coverage_result.overlay
         result = {"report": report, "alignment": alignment, "change_maps": {"dino": dino_map, "fused": fused_map, **pixel_maps},
                   "masks": masks, "detections": detections, "visuals": visuals, "text_report": text_report,
                   "source_images": {"aligned_before": alignment.aligned_before, "after": after_image}}
@@ -101,9 +120,12 @@ class ChangeDetectionPipeline:
     def save_result(result: dict[str, Any], output_dir: str | Path) -> None:
         directory = Path(output_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        names = {"aligned_before": "aligned_before.png", "dino_heatmap": "dino_heatmap.png", "fused_heatmap": "fused_heatmap.png", "detections": "detections.png", "matches": "matches.png"}
+        names = {"aligned_before": "aligned_before.png", "dino_heatmap": "dino_heatmap.png",
+                 "fused_heatmap": "fused_heatmap.png", "detections": "detections.png", "matches": "matches.png",
+                 "coverage_overlay": "coverage_overlay.png"}
         for key, filename in names.items():
-            Image.fromarray(result["visuals"][key]).save(directory / filename)
+            if key in result["visuals"]:
+                Image.fromarray(result["visuals"][key]).save(directory / filename)
         (directory / "report.json").write_text(json.dumps(result["report"], indent=2), encoding="utf-8")
         (directory / "report.txt").write_text(result["text_report"], encoding="utf-8")
         crops_dir = directory / "anomalies"

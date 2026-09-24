@@ -16,3 +16,4 @@ def test_app_renders_interactive_plan_in_both_tabs():
     ]
     assert len(reset_buttons) == 1
     assert reset_buttons[0].disabled
+    assert any(toggle.label == "Analyser la couverture entre Avant et Après" for toggle in app.toggle)

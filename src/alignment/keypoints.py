@@ -28,6 +28,34 @@ class KeypointMatches:
                    np.empty(0, np.float32), backend)
 
 
+@dataclass(frozen=True)
+class HomographyMatch:
+    """Validated planar registration from a source image to a target image."""
+
+    homography: np.ndarray
+    points_source: np.ndarray
+    points_target: np.ndarray
+    confidence: np.ndarray
+    inlier_mask: np.ndarray
+    backend: str
+
+    @property
+    def inliers(self) -> int:
+        return int(self.inlier_mask.sum())
+
+    @property
+    def matches(self) -> int:
+        return int(len(self.points_source))
+
+    @property
+    def inlier_ratio(self) -> float:
+        return self.inliers / max(1, self.matches)
+
+    @property
+    def inlier_source_points(self) -> np.ndarray:
+        return self.points_source[self.inlier_mask]
+
+
 class KeypointMatcher(Protocol):
     name: str
 
@@ -129,6 +157,50 @@ class FallbackKeypointMatcher:
         except Exception:
             self.name = self.fallback.name
             return self.fallback.match(image0, image1, image1_mask)
+
+
+def estimate_supported_homography(
+    source: np.ndarray,
+    target: np.ndarray,
+    matcher: KeypointMatcher,
+    target_mask: np.ndarray | None = None,
+) -> HomographyMatch | None:
+    """Estimate a reliable source-to-target homography without extrapolating from a tiny feature cluster."""
+    matched = matcher.match(source, target, target_mask)
+    if len(matched.points0) < 12:
+        return None
+    homography, flags = cv2.findHomography(matched.points0, matched.points1, cv2.RANSAC, 4.0)
+    if homography is None or flags is None or not np.all(np.isfinite(homography)):
+        return None
+    inliers = flags.ravel().astype(bool)
+    count = int(inliers.sum())
+    if count < 10 or count / len(matched.points0) < 0.45:
+        return None
+    source_points = matched.points0[inliers]
+    target_points = matched.points1[inliers]
+    source_span = np.ptp(source_points, axis=0)
+    target_span = np.ptp(target_points, axis=0)
+    if (source_span[0] < source.shape[1] * 0.12 or source_span[1] < source.shape[0] * 0.12 or
+            target_span[0] < target.shape[1] * 0.12 or target_span[1] < target.shape[0] * 0.12):
+        return None
+    corners = np.float32([[[0, 0], [source.shape[1] - 1, 0],
+                           [source.shape[1] - 1, source.shape[0] - 1], [0, source.shape[0] - 1]]])
+    projected = cv2.perspectiveTransform(corners, homography)[0]
+    if (not np.all(np.isfinite(projected)) or not cv2.isContourConvex(projected) or
+            cv2.contourArea(projected, oriented=True) <= 0):
+        return None
+    area = abs(cv2.contourArea(projected))
+    target_area = target.shape[0] * target.shape[1]
+    if area < target_area * 0.02 or area > target_area * 20:
+        return None
+    return HomographyMatch(
+        homography=homography,
+        points_source=matched.points0,
+        points_target=matched.points1,
+        confidence=matched.confidence,
+        inlier_mask=inliers,
+        backend=matched.backend,
+    )
 
 
 @lru_cache(maxsize=3)

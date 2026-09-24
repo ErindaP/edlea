@@ -180,15 +180,16 @@ def execute_pair_comparison(
     source: str,
     use_local_vlm: bool,
     vlm_model_name: str,
+    analyze_coverage: bool,
     pipeline_parameters: tuple[float, float, float, float, int, float],
 ) -> tuple[dict, Path]:
     """Persist and run one pair while keeping detector and LLM outputs independent."""
     pipeline = get_pipeline(*pipeline_parameters)
     property_metadata = next(item for item in properties if item["id"] == property_id)
     metadata = {"property_id": property_id, "observation_id": observation_id, "wall_id": wall_id,
-                "plan_id": plan.id, "source": source}
+                "plan_id": plan.id, "source": source, "pair_coverage_enabled": analyze_coverage}
     observation_dir = store.add_observation(property_id, observation_id, before, after, metadata)
-    result = pipeline.compare(before, after, observation_dir / "outputs")
+    result = pipeline.compare(before, after, observation_dir / "outputs", coverage_analysis=analyze_coverage)
     localized = localize_detections(result["detections"], plan, wall_id,
                                     result["source_images"]["after"].shape,
                                     result["report"]["detected_changes"])
@@ -428,6 +429,15 @@ with compare_tab:
     wall_index = list(wall_labels).index(selected_wall) if selected_wall in wall_labels else 0
     wall_id = st.selectbox("Mur observé", list(wall_labels), index=wall_index, format_func=lambda key: wall_labels[key])
     st.session_state["selected_wall_id"] = wall_id
+    analyze_coverage = st.toggle(
+        "Analyser la couverture entre Avant et Après",
+        value=False,
+        help=("Utilise SuperPoint + LightGlue pour identifier la zone commune. Les parties de l’image Après "
+              "sans correspondance fiable avec Avant sont exclues de la détection des différences."),
+    )
+    if analyze_coverage:
+        st.caption("Mode conservateur activé : si le recouvrement ne peut pas être établi avec assez de certitude, "
+                   "la comparaison est arrêtée au lieu d’interpréter les zones hors champ comme des défauts.")
     action_columns = st.columns(2)
     with action_columns[0]:
         analyze_upload = st.button("Analyser les images ajoutées", type="primary",
@@ -463,6 +473,7 @@ with compare_tab:
                     source=source,
                     use_local_vlm=use_local_vlm,
                     vlm_model_name=vlm_model_name,
+                    analyze_coverage=analyze_coverage,
                     pipeline_parameters=(dino_weight, ssim_weight, rgb_weight, threshold,
                                          int(min_area), hysteresis_ratio),
                 )
@@ -487,6 +498,21 @@ with compare_tab:
             st.image(last_result["visuals"]["dino_heatmap"], caption="Distance DINO", width="stretch")
         with map_columns[1]:
             st.image(last_result["visuals"]["fused_heatmap"], caption="Carte fusionnée", width="stretch")
+
+        pair_coverage = report.get("pair_coverage")
+        if pair_coverage:
+            st.subheader("Couverture géométrique Avant / Après")
+            coverage_columns = st.columns(2)
+            with coverage_columns[0]:
+                st.metric("Part de l’image Avant retrouvée", f"{pair_coverage['coverage_of_before_percent']:.1f} %")
+                st.metric("Part comparable dans l’image Après", f"{pair_coverage['comparable_after_percent']:.1f} %")
+                st.caption(
+                    f"Appariement : `{pair_coverage['matching_backend']}` · "
+                    f"{pair_coverage['inliers']} correspondances validées sur {pair_coverage['matches']}."
+                )
+            with coverage_columns[1]:
+                st.image(last_result["visuals"]["coverage_overlay"],
+                         caption="Contour vert : zone analysée · Orange : zone Après exclue", width="stretch")
 
         refreshed_anomalies = all_anomalies(store, selected_property)
         interactive_plan_3d(

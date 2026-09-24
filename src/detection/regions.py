@@ -6,10 +6,14 @@ import numpy as np
 from ..types import DetectedChange, Mask
 
 
-def regional_statistics(change_map: np.ndarray, masks: list[Mask], threshold: float) -> list[dict]:
+def regional_statistics(change_map: np.ndarray, masks: list[Mask], threshold: float,
+                        analysis_mask: np.ndarray | None = None) -> list[dict]:
     result = []
     for region in masks:
-        values = change_map[region.binary_mask]
+        region_mask = region.binary_mask
+        if analysis_mask is not None:
+            region_mask = region_mask & analysis_mask
+        values = change_map[region_mask]
         changed = values > threshold
         result.append({
             "surface": region.label,
@@ -22,7 +26,8 @@ def regional_statistics(change_map: np.ndarray, masks: list[Mask], threshold: fl
 
 def detect_changes(change_map: np.ndarray, masks: list[Mask], threshold: float = 0.4,
                    min_area: int = 150, morph_kernel: int = 5, opening_kernel: int = 0,
-                   hysteresis_ratio: float = 0.35) -> list[DetectedChange]:
+                   hysteresis_ratio: float = 0.35,
+                   analysis_mask: np.ndarray | None = None) -> list[DetectedChange]:
     """Detect strong changes, then grow them into connected low-confidence pixels.
 
     The two-threshold strategy keeps isolated low-score noise out while avoiding
@@ -31,6 +36,10 @@ def detect_changes(change_map: np.ndarray, masks: list[Mask], threshold: float =
     strong = (change_map > threshold).astype(np.uint8)
     low_threshold = float(threshold) * float(np.clip(hysteresis_ratio, 0.05, 1.0))
     binary = (change_map > low_threshold).astype(np.uint8)
+    valid = analysis_mask.astype(bool) if analysis_mask is not None else None
+    if valid is not None:
+        strong[~valid] = 0
+        binary[~valid] = 0
     # An opening with a square 5x5 kernel erases thin cracks. Keep it disabled
     # by default and use the minimum-area filter for isolated noise instead.
     opening_size = int(opening_kernel)
@@ -43,8 +52,11 @@ def detect_changes(change_map: np.ndarray, masks: list[Mask], threshold: float =
         closing = np.ones((closing_size, closing_size), dtype=np.uint8)
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, closing)
         strong = cv2.morphologyEx(strong, cv2.MORPH_CLOSE, closing)
+    if valid is not None:
+        strong[~valid] = 0
+        binary[~valid] = 0
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
-    image_area = change_map.shape[0] * change_map.shape[1]
+    image_area = int(valid.sum()) if valid is not None else change_map.shape[0] * change_map.shape[1]
     detections: list[DetectedChange] = []
     next_id = 1
     for label_id in range(1, num_labels):
@@ -62,6 +74,6 @@ def detect_changes(change_map: np.ndarray, masks: list[Mask], threshold: float =
                 surface, best_overlap = region.label, overlap
         x, y, w, h = [int(value) for value in stats[label_id, :4]]
         detections.append(DetectedChange(next_id, (x, y, x + w, y + h), area, score, surface,
-                                          area / image_area, binary_mask=component))
+                                          area / max(1, image_area), binary_mask=component))
         next_id += 1
     return sorted(detections, key=lambda item: item.score, reverse=True)

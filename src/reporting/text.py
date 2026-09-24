@@ -16,6 +16,15 @@ TYPE_LABELS = {
 
 def generate_text_report(report: dict[str, Any]) -> str:
     changes = report.get("detected_changes", [])
+    coverage = report.get("pair_coverage")
+    coverage_text = ""
+    if coverage:
+        coverage_text = (
+            "\nAnalyse de couverture : "
+            f"{coverage.get('coverage_of_before_percent', 0):.1f} % de l’image Avant retrouvée ; "
+            f"{coverage.get('comparable_after_percent', 0):.1f} % de l’image Après analysée. "
+            "Les zones hors recouvrement ont été exclues.\n"
+        )
     if not changes:
         max_score = report.get("max_change_score", 0.0)
         threshold = report.get("detection_threshold", 0.0)
@@ -26,7 +35,7 @@ def generate_text_report(report: dict[str, Any]) -> str:
             detail = f"Le score maximal observé est {max_score:.2f}, inférieur au seuil de {threshold:.2f}."
         deterministic = ("État des lieux comparé automatiquement.\n\n"
                 "Aucune zone de différence exploitable n’a été détectée avec les paramètres actuels.\n"
-                f"{detail}\n\n"
+                f"{detail}\n{coverage_text}\n"
                 "Ce résultat reste une aide à la vérification visuelle.")
         return _append_global_analysis(deterministic, report)
     types = Counter(change.get("type", "unknown") for change in changes)
@@ -38,6 +47,7 @@ def generate_text_report(report: dict[str, Any]) -> str:
         f"{len(changes)} zone(s) présentant une différence visuelle ont été détectée(s).",
         f"Synthèse : {summary}.",
         f"Surface globale modifiée : {report.get('changed_surface_ratio', 0.0):.1%}.",
+        coverage_text.strip(),
         "",
         "Détails :",
     ]

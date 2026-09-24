@@ -4,7 +4,7 @@ import numpy as np
 
 from src.comparison.fusion import compute_fused_change_map
 from src.detection.classification import AnomalyClassifier
-from src.detection.regions import detect_changes
+from src.detection.regions import detect_changes, regional_statistics
 from src.features.dinov3 import DinoFeatureExtractor
 from src.housing.interactive import build_interactive_figure
 from src.housing.plan import FloorPlan
@@ -62,6 +62,26 @@ def test_hysteresis_extends_box_along_weak_crack_continuation():
     assert detections[0].bbox[3] >= 124
 
 
+def test_coverage_mask_excludes_out_of_view_changes_and_controls_ratios():
+    change = np.zeros((100, 100), dtype=np.float32)
+    change[10:20, 10:20] = 0.9
+    change[60:90, 60:90] = 0.9
+    valid = np.zeros((100, 100), dtype=bool)
+    valid[:, :50] = True
+    masks = HeuristicSegmenter().segment(np.zeros((100, 100, 3), dtype=np.uint8))
+
+    detections = detect_changes(
+        change, masks, threshold=0.4, min_area=10, morph_kernel=1,
+        hysteresis_ratio=1.0, analysis_mask=valid,
+    )
+    statistics = regional_statistics(change, masks, 0.4, valid)
+
+    assert len(detections) == 1
+    assert detections[0].bbox == (10, 10, 20, 20)
+    assert detections[0].changed_area_ratio == 0.02
+    assert all(region["changed_area_ratio"] < 0.1 for region in statistics)
+
+
 def test_anomaly_classifier_returns_explainable_type():
     before = np.zeros((100, 160, 3), dtype=np.uint8)
     after = before.copy()
@@ -100,6 +120,21 @@ def test_text_report_mentions_detected_change():
     })
     assert "impact probable" in text
     assert "Zone 1" in text
+
+
+def test_text_report_mentions_pair_coverage_exclusion():
+    text = generate_text_report({
+        "max_change_score": 0.1,
+        "detection_threshold": 0.3,
+        "detected_changes": [],
+        "pair_coverage": {
+            "coverage_of_before_percent": 58.4,
+            "comparable_after_percent": 94.5,
+        },
+    })
+
+    assert "58.4 % de l’image Avant retrouvée" in text
+    assert "zones hors recouvrement ont été exclues" in text
 
 
 def test_text_report_appends_local_visual_analysis():

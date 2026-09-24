@@ -14,7 +14,7 @@ import numpy as np
 
 from src.comparison.pixel import compute_pixel_maps
 from src.detection.regions import detect_changes
-from src.alignment.keypoints import KeypointMatcher, get_keypoint_matcher
+from src.alignment.keypoints import KeypointMatcher, estimate_supported_homography, get_keypoint_matcher
 from src.image_io import load_image
 from src.segmentation.segmenter import HeuristicSegmenter
 from src.visualization.overlays import render_detections, render_heatmap
@@ -81,39 +81,13 @@ def _warp(image: np.ndarray, projection: np.ndarray, size: tuple[int, int],
 def _match(scan: np.ndarray, reference: ReferenceView, reference_mask: np.ndarray,
            matcher: KeypointMatcher) -> dict | None:
     """Estimate scan->reference homography and reject weak/degenerate matches."""
-    matched = matcher.match(scan, reference.image, reference_mask)
-    if len(matched.points0) < 12:
+    matched = estimate_supported_homography(scan, reference.image, matcher, reference_mask)
+    if matched is None:
         return None
-    scan_points = matched.points0
-    ref_points = matched.points1
-    homography, inlier_flags = cv2.findHomography(scan_points, ref_points, cv2.RANSAC, 4.0)
-    if homography is None or inlier_flags is None or not np.all(np.isfinite(homography)):
-        return None
-    inliers = inlier_flags.ravel().astype(bool)
-    count = int(inliers.sum())
-    if count < 10 or count / len(scan_points) < 0.45:
-        return None
-    # Matching points on a small fixture alone cannot establish whole-wall coverage.
-    points = scan_points[inliers]
-    span = np.ptp(points, axis=0)
-    reference_span = np.ptp(ref_points[inliers], axis=0)
-    if (span[0] < scan.shape[1] * 0.12 or span[1] < scan.shape[0] * 0.12 or
-            reference_span[0] < reference.image.shape[1] * 0.12 or
-            reference_span[1] < reference.image.shape[0] * 0.12):
-        return None
-    corners = np.float32([[[0, 0], [scan.shape[1] - 1, 0],
-                           [scan.shape[1] - 1, scan.shape[0] - 1], [0, scan.shape[0] - 1]]])
-    projected = cv2.perspectiveTransform(corners, homography)[0]
-    if (not np.all(np.isfinite(projected)) or not cv2.isContourConvex(projected) or
-            cv2.contourArea(projected, oriented=True) <= 0):
-        return None
-    area = abs(cv2.contourArea(projected))
-    ref_area = reference.image.shape[0] * reference.image.shape[1]
-    if area < ref_area * 0.02 or area > ref_area * 20:
-        return None
-    return {"homography": homography, "inliers": count, "matches": len(scan_points),
-            "inlier_ratio": round(count / len(scan_points), 3), "inlier_points": points,
-            "mean_confidence": round(float(matched.confidence[inliers].mean()), 3),
+    return {"homography": matched.homography, "inliers": matched.inliers, "matches": matched.matches,
+            "inlier_ratio": round(matched.inlier_ratio, 3),
+            "inlier_points": matched.inlier_source_points,
+            "mean_confidence": round(float(matched.confidence[matched.inlier_mask].mean()), 3),
             "matching_backend": matched.backend}
 
 
@@ -233,7 +207,8 @@ def analyze_scan(plan: FloorPlan, references: list[ReferenceView], scans: list[t
         after = item["scan_image"]
         change_map = item["change_map"]
         detections = detect_changes(change_map, HeuristicSegmenter().segment(after),
-                                    threshold=threshold, min_area=min_area, morph_kernel=3)
+                                    threshold=threshold, min_area=min_area, morph_kernel=3,
+                                    analysis_mask=overlap)
         changes = []
         width, height = item["size"]
         for detection in detections:
