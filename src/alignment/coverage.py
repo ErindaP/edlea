@@ -7,7 +7,7 @@ import numpy as np
 
 from src.types import AlignmentResult
 
-from .keypoints import estimate_supported_homography, get_keypoint_matcher
+from .keypoints import KeypointMatcher, estimate_supported_homography, get_keypoint_matcher
 from .warp import warp_image
 
 
@@ -18,6 +18,10 @@ class PairCoverageResult:
     comparable_after_percent: float
     matching_backend: str
     inlier_ratio: float
+    support_mode: str
+    source_span: tuple[float, float]
+    target_span: tuple[float, float]
+    safety_margin_pixels: int
     overlay: np.ndarray
     wall_status: np.ndarray
 
@@ -31,6 +35,10 @@ class PairCoverageResult:
             "matches": self.alignment.num_matches,
             "inliers": self.alignment.num_inliers,
             "inlier_ratio": round(self.inlier_ratio, 3),
+            "support_mode": self.support_mode,
+            "source_span_percent": [round(100 * value, 1) for value in self.source_span],
+            "target_span_percent": [round(100 * value, 1) for value in self.target_span],
+            "safety_margin_pixels": self.safety_margin_pixels,
         }
 
 
@@ -39,9 +47,10 @@ def analyze_pair_coverage(
     after: np.ndarray,
     *,
     matching_backend: str = "auto",
+    matcher: KeypointMatcher | None = None,
 ) -> PairCoverageResult:
     """Register After onto Before and retain only geometrically supported common pixels."""
-    matcher = get_keypoint_matcher(matching_backend)
+    matcher = matcher or get_keypoint_matcher(matching_backend)
     # The generic matcher returns image0 -> image1, hence After -> Before here.
     matched = estimate_supported_homography(after, before, matcher)
     if matched is None:
@@ -55,19 +64,46 @@ def analyze_pair_coverage(
         raise ValueError("Le recalage de couverture est dégénéré.") from exc
 
     aligned_before, projected_before = warp_image(before, before_to_after, after.shape[:2])
-    # Pairwise comparisons assume by default that the full Before frame maps
-    # to the full selected wall. Once the homography has passed the geometric
-    # checks, the complete After footprint is therefore meaningful coverage;
-    # limiting it to the convex hull of keypoints would under-report uniform
-    # wall areas simply because they contain few detectable features.
-    full_after = np.full(after.shape[:2], 255, dtype=np.uint8)
-    comparable_after = projected_before.copy()
-    comparable_after = cv2.erode(comparable_after.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+    inlier_source = matched.inlier_source_points
+    inlier_target = matched.points_target[matched.inlier_mask]
+    source_span_array = np.ptp(inlier_source, axis=0) / np.array([after.shape[1], after.shape[0]])
+    target_span_array = np.ptp(inlier_target, axis=0) / np.array([before.shape[1], before.shape[0]])
+    source_span = (float(source_span_array[0]), float(source_span_array[1]))
+    target_span = (float(target_span_array[0]), float(target_span_array[1]))
+    broadly_supported = (
+        matched.inliers >= 30
+        and min(source_span) >= 0.35
+        and min(target_span) >= 0.35
+    )
+
+    # The full Before frame still represents the full selected wall. However,
+    # a homography supported by a small feature cluster must not be extrapolated
+    # all the way to the image borders: those warped borders look like defects.
+    support_after = np.full(after.shape[:2], 255, dtype=np.uint8)
+    support_mode = "full_footprint"
+    if not broadly_supported:
+        support_mode = "inlier_supported"
+        support_after.fill(0)
+        cv2.fillConvexPoly(support_after, cv2.convexHull(inlier_source).astype(np.int32), 255)
+        support_radius = max(5, round(min(after.shape[:2]) * 0.06))
+        support_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (2 * support_radius + 1, 2 * support_radius + 1),
+        )
+        support_after = cv2.dilate(support_after, support_kernel)
+
+    comparable_after = projected_before & (support_after > 0)
+    safety_margin = max(3, round(min(after.shape[:2]) * (0.01 if broadly_supported else 0.005)))
+    safety_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (2 * safety_margin + 1, 2 * safety_margin + 1),
+    )
+    comparable_after = cv2.erode(comparable_after.astype(np.uint8), safety_kernel).astype(bool)
     if int(comparable_after.sum()) < 100:
         raise ValueError("La zone commune fiable entre les deux images est trop petite pour être analysée.")
 
     support_in_before = cv2.warpPerspective(
-        full_after,
+        comparable_after.astype(np.uint8) * 255,
         matched.homography,
         (before.shape[1], before.shape[0]),
         flags=cv2.INTER_NEAREST,
@@ -100,6 +136,10 @@ def analyze_pair_coverage(
         comparable_after_percent=comparable_after_percent,
         matching_backend=matched.backend,
         inlier_ratio=matched.inlier_ratio,
+        support_mode=support_mode,
+        source_span=source_span,
+        target_span=target_span,
+        safety_margin_pixels=safety_margin,
         overlay=overlay,
         wall_status=wall_status,
     )

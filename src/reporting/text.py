@@ -19,11 +19,14 @@ def generate_text_report(report: dict[str, Any]) -> str:
     coverage = report.get("pair_coverage")
     coverage_text = ""
     if coverage:
+        support_note = ""
+        if coverage.get("support_mode") == "inlier_supported":
+            support_note = " Le recalage étant localisé, l’analyse a été restreinte autour des correspondances fiables."
         coverage_text = (
             "\nAnalyse de couverture : "
             f"{coverage.get('coverage_of_before_percent', 0):.1f} % de l’image Avant retrouvée ; "
             f"{coverage.get('comparable_after_percent', 0):.1f} % de l’image Après analysée. "
-            "Les zones hors recouvrement ont été exclues.\n"
+            f"Les zones hors recouvrement ont été exclues.{support_note}\n"
         )
     if not changes:
         max_score = report.get("max_change_score", 0.0)

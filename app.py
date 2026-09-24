@@ -27,7 +27,7 @@ load_dotenv(PROJECT_DIR.parent / ".env")
 load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "configs" / "default.yaml"
 HOUSING_ROOT = PROJECT_DIR / "data" / "housing"
-PIPELINE_CACHE_VERSION = "pair-coverage-v3-full-wall-exif"
+PIPELINE_CACHE_VERSION = "pair-coverage-v4-adaptive-support"
 
 
 PLOTLY_CLICK_BRIDGE_JS = r"""
@@ -540,13 +540,19 @@ with compare_tab:
         pair_coverage = report.get("pair_coverage")
         if pair_coverage:
             st.subheader("Couverture géométrique Avant / Après")
+            if pair_coverage.get("support_mode") == "inlier_supported":
+                st.warning(
+                    "Support géométrique localisé : l’analyse a été limitée autour des correspondances fiables "
+                    "pour éviter les faux défauts aux frontières du recalage."
+                )
             coverage_columns = st.columns(2)
             with coverage_columns[0]:
                 st.metric("Part de l’image Avant retrouvée", f"{pair_coverage['coverage_of_before_percent']:.1f} %")
                 st.metric("Part comparable dans l’image Après", f"{pair_coverage['comparable_after_percent']:.1f} %")
                 st.caption(
                     f"Appariement : `{pair_coverage['matching_backend']}` · "
-                    f"{pair_coverage['inliers']} correspondances validées sur {pair_coverage['matches']}."
+                    f"{pair_coverage['inliers']} correspondances validées sur {pair_coverage['matches']} · "
+                    f"Mode : `{pair_coverage.get('support_mode', 'ancien résultat')}`."
                 )
             with coverage_columns[1]:
                 st.image(last_result["visuals"]["coverage_overlay"],
