@@ -6,7 +6,7 @@ import io
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 def load_image(source: str | Path | bytes | BinaryIO | Image.Image | np.ndarray,
@@ -21,15 +21,16 @@ def load_image(source: str | Path | bytes | BinaryIO | Image.Image | np.ndarray,
         image = image.astype(np.uint8)
     else:
         if isinstance(source, (str, Path)):
-            image = np.asarray(Image.open(source).convert("RGB"))
+            pil_image = Image.open(source)
         elif isinstance(source, bytes):
-            image = np.asarray(Image.open(io.BytesIO(source)).convert("RGB"))
+            pil_image = Image.open(io.BytesIO(source))
         elif hasattr(source, "read"):
-            image = np.asarray(Image.open(source).convert("RGB"))
+            pil_image = Image.open(source)
         elif isinstance(source, Image.Image):
-            image = np.asarray(source.convert("RGB"))
+            pil_image = source
         else:
             raise TypeError(f"Unsupported image source: {type(source)!r}")
+        image = np.asarray(ImageOps.exif_transpose(pil_image).convert("RGB"))
         image = image.astype(np.uint8)
     if max_size and max(image.shape[:2]) > max_size:
         scale = max_size / max(image.shape[:2])
@@ -42,4 +43,3 @@ def match_size(before: np.ndarray, after: np.ndarray) -> tuple[np.ndarray, np.nd
     if before.shape[:2] == after.shape[:2]:
         return before, after
     return cv2.resize(before, (after.shape[1], after.shape[0]), interpolation=cv2.INTER_AREA), after
-

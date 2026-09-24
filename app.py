@@ -27,7 +27,7 @@ load_dotenv(PROJECT_DIR.parent / ".env")
 load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "configs" / "default.yaml"
 HOUSING_ROOT = PROJECT_DIR / "data" / "housing"
-PIPELINE_CACHE_VERSION = "pair-coverage-v2-plan-projection"
+PIPELINE_CACHE_VERSION = "pair-coverage-v3-full-wall-exif"
 
 
 PLOTLY_CLICK_BRIDGE_JS = r"""
@@ -466,11 +466,13 @@ with compare_tab:
         "Analyser la couverture entre Avant et Après",
         value=False,
         help=("Utilise SuperPoint + LightGlue pour identifier la zone commune. Les parties de l’image Après "
-              "sans correspondance fiable avec Avant sont exclues de la détection des différences."),
+              "sans correspondance géométrique avec Avant sont exclues. Par défaut, l’image Avant entière "
+              "est considérée comme une vue de tout le mur sélectionné."),
     )
     if analyze_coverage:
-        st.caption("Mode conservateur activé : si le recouvrement ne peut pas être établi avec assez de certitude, "
-                   "la comparaison est arrêtée au lieu d’interpréter les zones hors champ comme des défauts.")
+        st.caption("Hypothèse : l’image Avant entière représente tout le mur sélectionné. Si le recouvrement ne peut "
+                   "pas être établi avec assez de certitude, la comparaison est arrêtée au lieu d’interpréter les "
+                   "zones hors champ comme des défauts.")
     action_columns = st.columns(2)
     with action_columns[0]:
         analyze_upload = st.button("Analyser les images ajoutées", type="primary",

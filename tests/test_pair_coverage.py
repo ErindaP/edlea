@@ -34,12 +34,13 @@ def test_pair_coverage_registers_partial_view_and_builds_comparison_mask():
 
     assert result.alignment.success
     assert 45 < result.coverage_of_before_percent < 75
-    assert 80 < result.comparable_after_percent < 100
+    assert 95 < result.comparable_after_percent <= 100
     assert result.alignment.valid_mask.shape == after.shape[:2]
     assert result.overlay.shape == after.shape
     assert result.wall_status.shape == before.shape[:2]
     assert set(np.unique(result.wall_status)) == {1, 2}
     assert result.alignment.num_inliers >= 10
+    assert result.to_dict()["reference_mapping"] == "full_image_is_full_wall"
 
 
 def test_pair_coverage_rejects_images_without_reliable_overlap():

@@ -24,6 +24,7 @@ class PairCoverageResult:
     def to_dict(self) -> dict[str, float | int | str | bool]:
         return {
             "enabled": True,
+            "reference_mapping": "full_image_is_full_wall",
             "coverage_of_before_percent": round(self.coverage_of_before_percent, 1),
             "comparable_after_percent": round(self.comparable_after_percent, 1),
             "matching_backend": self.matching_backend,
@@ -54,18 +55,19 @@ def analyze_pair_coverage(
         raise ValueError("Le recalage de couverture est dégénéré.") from exc
 
     aligned_before, projected_before = warp_image(before, before_to_after, after.shape[:2])
-    support_after = np.zeros(after.shape[:2], dtype=np.uint8)
-    hull = cv2.convexHull(matched.inlier_source_points).astype(np.int32)
-    cv2.fillConvexPoly(support_after, hull, 255)
-    margin = max(3, int(min(after.shape[:2]) * 0.04))
-    support_after = cv2.dilate(support_after, np.ones((margin, margin), np.uint8))
-    comparable_after = projected_before & (support_after > 0)
+    # Pairwise comparisons assume by default that the full Before frame maps
+    # to the full selected wall. Once the homography has passed the geometric
+    # checks, the complete After footprint is therefore meaningful coverage;
+    # limiting it to the convex hull of keypoints would under-report uniform
+    # wall areas simply because they contain few detectable features.
+    full_after = np.full(after.shape[:2], 255, dtype=np.uint8)
+    comparable_after = projected_before.copy()
     comparable_after = cv2.erode(comparable_after.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
     if int(comparable_after.sum()) < 100:
         raise ValueError("La zone commune fiable entre les deux images est trop petite pour être analysée.")
 
     support_in_before = cv2.warpPerspective(
-        support_after,
+        full_after,
         matched.homography,
         (before.shape[1], before.shape[0]),
         flags=cv2.INTER_NEAREST,
