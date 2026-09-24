@@ -27,6 +27,7 @@ load_dotenv(PROJECT_DIR.parent / ".env")
 load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "configs" / "default.yaml"
 HOUSING_ROOT = PROJECT_DIR / "data" / "housing"
+PIPELINE_CACHE_VERSION = "pair-coverage-v1"
 
 
 PLOTLY_CLICK_BRIDGE_JS = r"""
@@ -94,7 +95,10 @@ def get_report_jobs() -> LocalReportJobs:
 
 @st.cache_resource
 def get_pipeline(dino_weight: float, ssim_weight: float, rgb_weight: float, threshold: float,
-                 min_area: int, hysteresis_ratio: float):
+                 min_area: int, hysteresis_ratio: float, cache_version: str):
+    # The explicit version prevents Streamlit hot reloads from returning an
+    # instance created from an older ChangeDetectionPipeline implementation.
+    del cache_version
     pipeline = ChangeDetectionPipeline.from_yaml(CONFIG_PATH)
     pipeline.config["comparison"].update({"dino_weight": dino_weight, "ssim_weight": ssim_weight, "rgb_weight": rgb_weight})
     pipeline.config["detection"].update({"threshold": threshold, "min_area": min_area,
@@ -184,7 +188,7 @@ def execute_pair_comparison(
     pipeline_parameters: tuple[float, float, float, float, int, float],
 ) -> tuple[dict, Path]:
     """Persist and run one pair while keeping detector and LLM outputs independent."""
-    pipeline = get_pipeline(*pipeline_parameters)
+    pipeline = get_pipeline(*pipeline_parameters, PIPELINE_CACHE_VERSION)
     property_metadata = next(item for item in properties if item["id"] == property_id)
     metadata = {"property_id": property_id, "observation_id": observation_id, "wall_id": wall_id,
                 "plan_id": plan.id, "source": source, "pair_coverage_enabled": analyze_coverage}
