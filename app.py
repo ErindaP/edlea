@@ -15,6 +15,7 @@ from src.housing.localization import localize_detections
 from src.housing.plan import FloorPlan
 from src.housing.multiview import ReferenceView, analyze_scan
 from src.housing.store import HousingStore
+from src.integrations.google_drive import GOOGLE_DRIVE_FOLDER_URL, download_drive_demo_pair
 from src.pipeline import ChangeDetectionPipeline
 from src.reporting.text import generate_text_report
 from src.reporting.jobs import LocalReportJobs
@@ -160,9 +161,53 @@ def latest_scan_data(store: HousingStore, property_id: str, plan: FloorPlan) -> 
             changes.append({"id": change["id"], "type": "variation visuelle",
                             "confidence": change["score"], "observation_id": latest["id"],
                             "scan_id": latest["id"],
+                            "evidence": ["Photos du scan : " + ", ".join(change.get("source_image_ids", []))]
+                            if change.get("source_image_ids") else [],
                             "location": {"wall_id": wall_id, "room_id": wall.room_id,
                                          "u": change["u"], "z_m": wall.height * (1 - change["v"])}})
     return latest, masks, changes
+
+
+def execute_pair_comparison(
+    before: bytes,
+    after: bytes,
+    *,
+    property_id: str,
+    observation_id: str,
+    wall_id: str,
+    plan: FloorPlan,
+    properties: list[dict],
+    source: str,
+    use_local_vlm: bool,
+    vlm_model_name: str,
+    pipeline_parameters: tuple[float, float, float, float, int, float],
+) -> tuple[dict, Path]:
+    """Persist and run one pair while keeping detector and LLM outputs independent."""
+    pipeline = get_pipeline(*pipeline_parameters)
+    property_metadata = next(item for item in properties if item["id"] == property_id)
+    metadata = {"property_id": property_id, "observation_id": observation_id, "wall_id": wall_id,
+                "plan_id": plan.id, "source": source}
+    observation_dir = store.add_observation(property_id, observation_id, before, after, metadata)
+    result = pipeline.compare(before, after, observation_dir / "outputs")
+    localized = localize_detections(result["detections"], plan, wall_id,
+                                    result["source_images"]["after"].shape,
+                                    result["report"]["detected_changes"])
+    result["report"]["property"] = property_metadata
+    result["report"]["observation_id"] = observation_id
+    result["report"]["source"] = source
+    result["report"]["plan"] = {"id": plan.id, "wall_id": wall_id}
+    result["report"]["detected_changes"] = localized
+    result["report"]["run_id"] = uuid4().hex
+    result["text_report"] = generate_text_report(result["report"])
+    store.save_report(observation_dir, result["report"], result["text_report"])
+    if use_local_vlm:
+        get_report_jobs().submit(
+            store,
+            observation_dir,
+            result["report"],
+            get_local_vision_reporter(vlm_model_name.strip() or DEFAULT_VLM_MODEL),
+        )
+    return result, observation_dir
 
 
 @st.dialog("Détail de la comparaison", width="large")
@@ -352,41 +397,50 @@ with compare_tab:
     wall_index = list(wall_labels).index(selected_wall) if selected_wall in wall_labels else 0
     wall_id = st.selectbox("Mur observé", list(wall_labels), index=wall_index, format_func=lambda key: wall_labels[key])
     st.session_state["selected_wall_id"] = wall_id
-    analyze = st.button("Analyser et localiser les différences", type="primary", disabled=not (before_file and after_file))
+    action_columns = st.columns(2)
+    with action_columns[0]:
+        analyze_upload = st.button("Analyser les images ajoutées", type="primary",
+                                   disabled=not (before_file and after_file), width="stretch")
+    with action_columns[1]:
+        analyze_drive = st.button("Télécharger et analyser l’exemple Google Drive", width="stretch")
+    st.caption(f"Le second bouton récupère `avant.jpg` et `apres.jpg` depuis le "
+               f"[dossier Google Drive public]({GOOGLE_DRIVE_FOLDER_URL}), puis lance exactement la même pipeline et le rapport.")
 
-    if analyze:
-        pipeline = get_pipeline(
-            dino_weight,
-            ssim_weight,
-            rgb_weight,
-            threshold,
-            int(min_area),
-            hysteresis_ratio,
-        )
-        property_metadata = next(item for item in properties if item["id"] == selected_property)
-        metadata = {"property_id": selected_property, "observation_id": observation_id, "wall_id": wall_id, "plan_id": plan.id}
-        observation_dir = store.add_observation(selected_property, observation_id, before_file.getvalue(), after_file.getvalue(), metadata)
-        with st.spinner("Alignement, comparaison et localisation sur le plan…"):
-            result = pipeline.compare(before_file.getvalue(), after_file.getvalue(), observation_dir / "outputs")
-        localized = localize_detections(result["detections"], plan, wall_id, result["source_images"]["after"].shape, result["report"]["detected_changes"])
-        result["report"]["property"] = property_metadata
-        result["report"]["observation_id"] = observation_id
-        result["report"]["plan"] = {"id": plan.id, "wall_id": wall_id}
-        result["report"]["detected_changes"] = localized
-        result["report"]["run_id"] = uuid4().hex
-        result["text_report"] = generate_text_report(result["report"])
-        store.save_report(observation_dir, result["report"], result["text_report"])
-        if use_local_vlm:
-            get_report_jobs().submit(
-                store,
-                observation_dir,
-                result["report"],
-                get_local_vision_reporter(vlm_model_name.strip() or DEFAULT_VLM_MODEL),
-            )
-        st.session_state["last_observation_dir"] = observation_dir
-        st.session_state["last_result"] = result
-        st.session_state["last_property"] = selected_property
-        st.success(f"Comparaison et rapport technique enregistrés dans {observation_dir.relative_to(PROJECT_DIR)}")
+    pair_to_analyze = None
+    if analyze_upload:
+        pair_to_analyze = (before_file.getvalue(), after_file.getvalue(), observation_id, "upload_utilisateur")
+    elif analyze_drive:
+        try:
+            with st.spinner("Téléchargement et validation des deux images Google Drive…"):
+                drive_before, drive_after = download_drive_demo_pair()
+            pair_to_analyze = (drive_before, drive_after, f"drive_{observation_id}", GOOGLE_DRIVE_FOLDER_URL)
+        except (RuntimeError, ValueError, OSError) as exc:
+            st.error(f"Impossible de récupérer les images Google Drive : {exc}")
+
+    if pair_to_analyze:
+        before_bytes, after_bytes, effective_observation_id, source = pair_to_analyze
+        try:
+            with st.spinner("Alignement, comparaison et localisation sur le plan…"):
+                result, observation_dir = execute_pair_comparison(
+                    before_bytes,
+                    after_bytes,
+                    property_id=selected_property,
+                    observation_id=effective_observation_id,
+                    wall_id=wall_id,
+                    plan=plan,
+                    properties=properties,
+                    source=source,
+                    use_local_vlm=use_local_vlm,
+                    vlm_model_name=vlm_model_name,
+                    pipeline_parameters=(dino_weight, ssim_weight, rgb_weight, threshold,
+                                         int(min_area), hysteresis_ratio),
+                )
+            st.session_state["last_observation_dir"] = observation_dir
+            st.session_state["last_result"] = result
+            st.session_state["last_property"] = selected_property
+            st.success(f"Comparaison et rapport technique enregistrés dans {observation_dir.relative_to(PROJECT_DIR)}")
+        except (RuntimeError, ValueError, OSError) as exc:
+            st.error(f"La comparaison n’a pas pu être exécutée : {exc}")
 
     last_result = st.session_state.get("last_result") if st.session_state.get("last_property") == selected_property else None
     if last_result:
@@ -433,6 +487,8 @@ with scan_tab:
     st.subheader("Références et nouveau relevé multivue")
     st.caption("Prototype pour murs plans : des vues différentes et un nombre libre de photos sont acceptés si elles se recouvrent visuellement. "
                "La couverture est calculée uniquement sur les parties référencées des murs, pas sur les pièces entières.")
+    st.info("Vous n’indiquez pas le mur des photos du nouveau scan : chaque photo est comparée à toutes les références. "
+            "Le meilleur appariement géométrique choisit automatiquement la référence et donc le mur ; les candidats proches restent visibles ci-dessous.")
     demo_dir = PROJECT_DIR / "examples" / "multiview"
     demo_names = ("reference.jpg", "scan_gauche.jpg", "scan_marque.jpg")
     demo_ready = all((demo_dir / filename).is_file() for filename in demo_names)
@@ -536,7 +592,32 @@ with scan_tab:
         st.caption(f"Surface référencée : {summary['reference_area_m2']:.2f} m² · "
                    f"Surface revue : {summary['scanned_area_m2']:.2f} m². Les surfaces non référencées sont exclues.")
         registration_rows = summary.get("registrations", [])
-        st.dataframe(registration_rows, width="stretch", hide_index=True)
+        scan_names = {image["id"]: image.get("source_name", image["id"])
+                      for image in selected_scan.get("images", [])}
+        reference_names = {reference["id"]: reference.get("source_name") or reference["id"]
+                           for reference in references}
+        assignment_rows = []
+        for registration in registration_rows:
+            candidates = registration.get("reference_candidates", [])
+            if not candidates:
+                assignment_rows.append({"Photo du scan": scan_names.get(registration["image_id"], registration["image_id"]),
+                                        "Statut": registration["status"], "Rang": "—",
+                                        "Référence probable": "—", "Mur probable": "—",
+                                        "Correspondances validées": 0, "Score relatif": "—"})
+                continue
+            for rank, candidate in enumerate(candidates, start=1):
+                assignment_rows.append({
+                    "Photo du scan": scan_names.get(registration["image_id"], registration["image_id"]),
+                    "Statut": registration["status"], "Rang": rank,
+                    "Référence probable": reference_names.get(candidate["reference_id"], candidate["reference_id"]),
+                    "Mur probable": candidate["wall_id"],
+                    "Correspondances validées": candidate["inliers"],
+                    "Score relatif": f"{candidate['relative_score_percent']:.1f} %",
+                })
+        st.subheader("Attribution automatique des photos")
+        st.dataframe(assignment_rows, width="stretch", hide_index=True)
+        st.caption("Le rang 1 est retenu. Si une référence d’un autre mur obtient au moins 85 % de son score, "
+                   "la photo est marquée `mur_ambigu` et n’augmente pas artificiellement la couverture.")
         if any(row["status"] != "localisee" for row in registration_rows):
             st.warning("Certaines photos n’ont pas été localisées avec assez de certitude ; elles ne sont pas comptées dans la couverture.")
         statuses = {}
@@ -549,6 +630,8 @@ with scan_tab:
             for change in wall_data.get("changes", []):
                 scan_markers.append({"id": change["id"], "type": "variation visuelle", "confidence": change["score"],
                                      "observation_id": selected_scan_id, "scan_id": selected_scan_id,
+                                     "evidence": ["Photos du scan : " + ", ".join(change.get("source_image_ids", []))]
+                                     if change.get("source_image_ids") else [],
                                      "location": {"wall_id": wall_key, "room_id": wall.room_id,
                                                   "u": change["u"], "z_m": wall.height * (1 - change["v"])}})
         interactive_plan_3d(plan, scan_markers, store, selected_property,
@@ -557,6 +640,10 @@ with scan_tab:
         for wall_key, wall_data in summary["walls"].items():
             with st.expander(f"{wall_key} — {wall_data['coverage_percent']:.1f} % couverts · "
                              f"{len(wall_data['changes'])} variation(s)"):
+                reference_labels = [reference_names.get(reference_id, reference_id)
+                                    for reference_id in wall_data.get("reference_ids", [])]
+                if reference_labels:
+                    st.caption("Références utilisées sur ce mur : " + " · ".join(reference_labels))
                 paths = store.scan_change_media(selected_property, selected_scan_id, wall_key)
                 for column, (label, path) in zip(st.columns(3),
                                                  [("Référence rectifiée", paths["before"]),

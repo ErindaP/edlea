@@ -62,6 +62,8 @@ def test_scan_auto_assigns_to_matching_wall_and_leaves_other_wall_uncovered():
                            ReferenceView("r2", "bedroom_west", second)],
                           [("new", perspective_crop(second, 0.05, 0.90))])
     assert result["registrations"][0]["wall_id"] == "bedroom_west"
+    assert result["registrations"][0]["reference_candidates"][0]["reference_id"] == "r2"
+    assert result["registrations"][0]["reference_candidates"][0]["relative_score_percent"] == 100
     assert result["walls"]["living_east"]["coverage_percent"] == 0
     assert result["walls"]["bedroom_west"]["coverage_percent"] > 50
 
@@ -76,6 +78,7 @@ def test_changed_view_detects_mark_even_when_first_view_covers_it():
     changes = result["walls"]["living_east"]["changes"]
     assert changes
     assert any(0.5 < change["u"] < 0.65 for change in changes)
+    assert any("marked" in change["source_image_ids"] for change in changes)
 
 
 def test_calibration_rejects_degenerate_quad():

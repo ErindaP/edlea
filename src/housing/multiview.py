@@ -145,14 +145,17 @@ def analyze_scan(plan: FloorPlan, references: list[ReferenceView], scans: list[t
             "reference_mask": np.zeros(mask.shape, dtype=bool),
             "scan_image": np.zeros_like(warped), "scan_mask": np.zeros(mask.shape, dtype=bool),
             "change_map": np.zeros(mask.shape, dtype=np.float32),
+            "change_source": np.full(mask.shape, -1, dtype=np.int32), "reference_ids": [],
         })
         new_pixels = mask & ~item["reference_mask"]
         item["reference_image"][new_pixels] = warped[new_pixels]
         item["reference_mask"] |= mask
+        item["reference_ids"].append(view.id)
         prepared.append((view, projection, source_mask, size))
 
     registrations = []
-    for scan_id, source in scans:
+    scan_ids = [scan_id for scan_id, _ in scans]
+    for scan_index, (scan_id, source) in enumerate(scans):
         scan = load_image(source, 1280)
         candidates = []
         for view, projection, source_mask, size in prepared:
@@ -160,13 +163,22 @@ def analyze_scan(plan: FloorPlan, references: list[ReferenceView], scans: list[t
             if match is not None:
                 candidates.append((match["inliers"], view, projection, size, match))
         if not candidates:
-            registrations.append({"image_id": scan_id, "status": "non_localisee", "wall_id": None})
+            registrations.append({"image_id": scan_id, "status": "non_localisee", "wall_id": None,
+                                  "reference_candidates": []})
             continue
         candidates.sort(key=lambda candidate: candidate[0], reverse=True)
         _, view, projection, size, match = candidates[0]
+        candidate_rows = [{"reference_id": candidate_view.id, "wall_id": candidate_view.wall_id,
+                           "inliers": int(candidate_match["inliers"]),
+                           "matches": int(candidate_match["matches"]),
+                           "inlier_ratio": float(candidate_match["inlier_ratio"]),
+                           "relative_score_percent": round(100 * candidate_match["inliers"] /
+                                                           max(1, match["inliers"]), 1)}
+                          for _, candidate_view, _, _, candidate_match in candidates[:3]]
         if any(other_view.wall_id != view.wall_id and score >= match["inliers"] * 0.85
                for score, other_view, *_ in candidates[1:]):
-            registrations.append({"image_id": scan_id, "status": "mur_ambigu", "wall_id": None})
+            registrations.append({"image_id": scan_id, "status": "mur_ambigu", "wall_id": None,
+                                  "reference_candidates": candidate_rows})
             continue
         image_to_atlas = projection @ match["homography"]
         # Do not extrapolate coverage far beyond the matched planar features.
@@ -182,7 +194,8 @@ def analyze_scan(plan: FloorPlan, references: list[ReferenceView], scans: list[t
         # beyond known reference coverage cannot increase the denominator.
         mask &= item["reference_mask"]
         if int(mask.sum()) < 100:
-            registrations.append({"image_id": scan_id, "status": "non_localisee", "wall_id": None})
+            registrations.append({"image_id": scan_id, "status": "non_localisee", "wall_id": None,
+                                  "reference_candidates": candidate_rows})
             continue
         new_pixels = mask & ~item["scan_mask"]
         item["scan_image"][new_pixels] = warped[new_pixels]
@@ -195,12 +208,14 @@ def analyze_scan(plan: FloorPlan, references: list[ReferenceView], scans: list[t
         stronger = comparable & (view_change > item["change_map"])
         item["scan_image"][stronger] = warped[stronger]
         item["change_map"][stronger] = view_change[stronger]
+        item["change_source"][stronger] = scan_index
         item["scan_mask"] |= mask
         registrations.append({"image_id": scan_id, "status": "localisee", "wall_id": view.wall_id,
                               "reference_id": view.id, "inliers": match["inliers"],
                               "matches": match["matches"], "inlier_ratio": match["inlier_ratio"],
                               "coverage_of_reference_percent": round(float(100 * mask.sum() /
-                                                                            max(1, item["reference_mask"].sum())), 1)})
+                                                                            max(1, item["reference_mask"].sum())), 1),
+                              "reference_candidates": candidate_rows})
 
     walls = {}
     total_reference_area = 0.0
@@ -227,14 +242,22 @@ def analyze_scan(plan: FloorPlan, references: list[ReferenceView], scans: list[t
         width, height = item["size"]
         for detection in detections:
             x1, y1, x2, y2 = detection.bbox
+            source_values = item["change_source"][detection.binary_mask]
+            source_values = source_values[source_values >= 0]
+            source_image_ids = []
+            if source_values.size:
+                counts = np.bincount(source_values, minlength=len(scan_ids))
+                source_image_ids = [scan_ids[index] for index in np.argsort(counts)[::-1]
+                                    if counts[index] > 0][:3]
             changes.append({"id": detection.id, "bbox": list(detection.bbox),
                             "score": round(detection.score, 3),
                             "u": round((x1 + x2) / (2 * width), 4),
-                            "v": round((y1 + y2) / (2 * height), 4)})
+                            "v": round((y1 + y2) / (2 * height), 4),
+                            "source_image_ids": source_image_ids})
         walls[wall_id] = {
             "reference_area_m2": round(reference_area, 3), "scanned_area_m2": round(scanned_area, 3),
             "coverage_percent": round(100 * scanned_area / reference_area, 1) if reference_area else 0.0,
-            "changes": changes, "status": status, "reference_atlas": before,
+            "reference_ids": item["reference_ids"], "changes": changes, "status": status, "reference_atlas": before,
             "scan_atlas": after, "change_heatmap": render_heatmap(change_map, after),
             "detections": render_detections(after, detections),
         }
