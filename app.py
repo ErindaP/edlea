@@ -27,7 +27,7 @@ load_dotenv(PROJECT_DIR.parent / ".env")
 load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "configs" / "default.yaml"
 HOUSING_ROOT = PROJECT_DIR / "data" / "housing"
-PIPELINE_CACHE_VERSION = "pair-coverage-v1"
+PIPELINE_CACHE_VERSION = "pair-coverage-v2-plan-projection"
 
 
 PLOTLY_CLICK_BRIDGE_JS = r"""
