@@ -67,6 +67,8 @@ Cette localisation est une première approximation : elle suppose que l’image 
 
 Dans l’onglet `Plan 2.5D` ou `Nouvelle comparaison`, le plan peut être pivoté, déplacé et zoomé. Un clic sur une face de mur sélectionne automatiquement son identifiant ; les images ajoutées dans `Nouvelle comparaison` sont alors associées à ce mur. Un clic sur un marqueur rouge ouvre les images Avant, Après et Détections de la comparaison correspondante.
 
+La barre latérale contient aussi `Réinitialiser le logement actif`. Après confirmation, cette action efface les comparaisons, rapports et scans multivues qui alimentent les marqueurs et la couverture du plan, sans supprimer le logement ni `plan.json`. Les références calibrées sont conservées par défaut ; une case séparée permet de les supprimer également pour repartir entièrement de zéro.
+
 ## Scan multivue et couverture (branche `multivue-couverture`)
 
 L’onglet `Scan multivue` accepte plusieurs photos **de référence** par logement et un nombre libre de photos par nouveau relevé. Pour chaque référence, indiquez le mur, la portion du mur `(u0,v0,u1,v1)` et, si la photo n’est pas déjà recadrée sur ce mur, les quatre coins du mur dans l’image (coordonnées normalisées entre 0 et 1, dans l’ordre haut-gauche, haut-droit, bas-droit, bas-gauche). La valeur par défaut `0,0;1,0;1,1;0,1` suppose que *toute la photo est une seule face de mur* ; elle n’est pas adaptée à une vue de pièce montrant plusieurs murs, sol et plafond.

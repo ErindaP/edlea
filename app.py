@@ -330,6 +330,36 @@ with st.sidebar:
                     st.rerun()
                 except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
                     st.error(f"Plan JSON invalide : {exc}")
+    if reset_message := st.session_state.pop("property_reset_message", None):
+        st.success(reset_message)
+    with st.expander("Réinitialiser le logement actif"):
+        st.warning("Cette action supprime définitivement les comparaisons, rapports et scans multivues du logement actif. "
+                   "Le logement et la géométrie de son plan sont conservés.")
+        clear_references = st.checkbox(
+            "Supprimer également les photos de référence calibrées",
+            value=False,
+            help="Laissez décoché pour pouvoir réutiliser les références lors du prochain scan.",
+        )
+        confirm_reset = st.checkbox("Je confirme la suppression des observations", value=False)
+        if st.button("Vider le plan et réinitialiser les observations", disabled=not confirm_reset,
+                     width="stretch"):
+            try:
+                removed = store.reset_property_data(selected_property, include_references=clear_references)
+                for key in (
+                    "last_observation_dir",
+                    "last_result",
+                    "last_property",
+                    "last_anomaly_popup",
+                    "selected_wall_id",
+                ):
+                    st.session_state.pop(key, None)
+                details = f"{removed['observations']} comparaison(s) et {removed['scans']} scan(s) supprimés"
+                if clear_references:
+                    details += f", ainsi que {removed['references']} référence(s)"
+                st.session_state["property_reset_message"] = details + ". Le plan est maintenant vierge."
+                st.rerun()
+            except (OSError, ValueError) as exc:
+                st.error(f"La réinitialisation a échoué : {exc}")
     st.header("Paramètres de comparaison")
     dino_weight = st.slider("Poids DINO", 0.0, 1.0, 0.6, 0.05)
     ssim_weight = st.slider("Poids SSIM", 0.0, 1.0, 0.3, 0.05)

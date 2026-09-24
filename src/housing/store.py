@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,29 @@ class HousingStore:
     def load_plan(self, property_id: str) -> FloorPlan:
         path = self.property_dir(property_id) / "plan.json"
         return FloorPlan.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    def reset_property_data(self, property_id: str, *, include_references: bool = False) -> dict[str, int]:
+        """Clear plan overlays while preserving the property and its plan geometry.
+
+        Pair observations and multiview scans both feed markers/coverage on the
+        2.5D plan. References are retained by default because they do not create
+        overlays on their own and are expensive to calibrate again.
+        """
+        root = self.root.resolve()
+        property_directory = self.property_dir(property_id).resolve()
+        if property_directory.parent != root or not (property_directory / "property.json").is_file():
+            raise ValueError("Logement invalide ou extérieur à la base de données.")
+        names = ["observations", "scans"] + (["references"] if include_references else [])
+        removed: dict[str, int] = {}
+        for name in names:
+            target = property_directory / name
+            if target.is_symlink():
+                raise ValueError(f"Réinitialisation refusée : {name} est un lien symbolique.")
+            removed[name] = sum(1 for _ in target.iterdir()) if target.is_dir() else 0
+            if target.exists():
+                shutil.rmtree(target)
+            target.mkdir(parents=True, exist_ok=True)
+        return removed
 
     def add_observation(self, property_id: str, observation_id: str, before: bytes, after: bytes,
                         metadata: dict[str, Any]) -> Path:

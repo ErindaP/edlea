@@ -9,3 +9,10 @@ def test_app_renders_interactive_plan_in_both_tabs():
 
     assert not app.exception
     assert len(app.get("plotly_chart")) >= 2
+    reset_buttons = [
+        button
+        for button in app.button
+        if button.label == "Vider le plan et réinitialiser les observations"
+    ]
+    assert len(reset_buttons) == 1
+    assert reset_buttons[0].disabled
