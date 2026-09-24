@@ -121,6 +121,7 @@ class HousingStore:
             "before": directory / "before.jpg",
             "after": directory / "after.jpg",
             "detections": directory / "outputs" / "detections.png",
+            "combined_distance": directory / "outputs" / "fused_heatmap.png",
         }
 
     def list_reports(self, property_id: str) -> list[dict[str, Any]]:
@@ -224,4 +225,5 @@ class HousingStore:
         prefix = _slug(wall_id)
         return {"before": directory / f"{prefix}_reference_atlas.png",
                 "after": directory / f"{prefix}_scan_atlas.png",
-                "detections": directory / f"{prefix}_detections.png"}
+                "detections": directory / f"{prefix}_detections.png",
+                "combined_distance": directory / f"{prefix}_change_heatmap.png"}

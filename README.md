@@ -65,7 +65,7 @@ Le logement de démonstration contient un plan synthétique de quatre pièces et
 
 Cette localisation est une première approximation : elle suppose que l’image couvre principalement le mur sélectionné. Une calibration par points correspondants ou une estimation de pose caméra sera nécessaire pour obtenir une localisation métrique précise.
 
-Dans l’onglet `Plan 2.5D` ou `Nouvelle comparaison`, le plan peut être pivoté, déplacé et zoomé. Un clic sur une face de mur sélectionne automatiquement son identifiant ; les images ajoutées dans `Nouvelle comparaison` sont alors associées à ce mur. Un clic sur un marqueur rouge ouvre les images Avant, Après et Détections de la comparaison correspondante.
+Dans l’onglet `Plan 2.5D` ou `Nouvelle comparaison`, le plan peut être pivoté, déplacé et zoomé. Un clic sur une face de mur sélectionne automatiquement son identifiant ; les images ajoutées dans `Nouvelle comparaison` sont alors associées à ce mur. Un clic sur un marqueur rouge ouvre les images Avant, Après, Détections et Distance combinée de la comparaison correspondante.
 
 La barre latérale contient aussi `Réinitialiser le logement actif`. Après confirmation, cette action efface les comparaisons, rapports et scans multivues qui alimentent les marqueurs et la couverture du plan, sans supprimer le logement ni `plan.json`. Les références calibrées sont conservées par défaut ; une case séparée permet de les supprimer également pour repartir entièrement de zéro.
 

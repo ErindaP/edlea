@@ -228,6 +228,7 @@ def show_anomaly_dialog(anomaly: dict, media: dict[str, Path]) -> None:
         ("Avant", media.get("before")),
         ("Après", media.get("after")),
         ("Détections", media.get("detections")),
+        ("Distance combinée", media.get("combined_distance")),
     ]
     available_images = [(label, path) for label, path in available_images if path and path.is_file()]
     if available_images:
