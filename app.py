@@ -172,6 +172,21 @@ def latest_scan_data(store: HousingStore, property_id: str, plan: FloorPlan) -> 
     return latest, masks, changes
 
 
+def pair_coverage_data(store: HousingStore, property_id: str, plan: FloorPlan) -> tuple[dict[str, np.ndarray], dict | None]:
+    """Load the latest persisted pairwise coverage layer for each selected wall."""
+    masks: dict[str, np.ndarray] = {}
+    latest = None
+    for item in store.list_pair_coverages(property_id):
+        try:
+            plan.wall(item["wall_id"])
+            status = np.asarray(Image.open(item["status_path"]).convert("L"))
+        except (KeyError, OSError):
+            continue
+        masks[item["wall_id"]] = status
+        latest = item
+    return masks, latest
+
+
 def execute_pair_comparison(
     before: bytes,
     after: bytes,
@@ -357,6 +372,7 @@ with st.sidebar:
                     "last_property",
                     "last_anomaly_popup",
                     "selected_wall_id",
+                    "comparison_success_message",
                 ):
                     st.session_state.pop(key, None)
                 details = f"{removed['observations']} comparaison(s) et {removed['scans']} scan(s) supprimés"
@@ -392,7 +408,11 @@ with st.sidebar:
 
 plan = store.load_plan(selected_property)
 anomalies = all_anomalies(store, selected_property)
-latest_scan, coverage_masks, scan_changes = latest_scan_data(store, selected_property, plan)
+latest_scan, scan_coverage_masks, scan_changes = latest_scan_data(store, selected_property, plan)
+pair_coverage_masks, latest_pair_coverage = pair_coverage_data(store, selected_property, plan)
+# A pairwise analysis is the most explicit, wall-specific action and therefore
+# supersedes the latest multiview texture for the same wall.
+coverage_masks = {**scan_coverage_masks, **pair_coverage_masks}
 plan_tab, compare_tab, scan_tab, history_tab = st.tabs(["Plan 2.5D", "Nouvelle comparaison", "Scan multivue", "Historique"])
 
 with plan_tab:
@@ -411,10 +431,18 @@ with plan_tab:
     if latest_scan:
         st.caption(f"Dernier scan multivue : {latest_scan['name']} · Couverture des surfaces de référence : "
                    f"{latest_scan['coverage']['coverage_percent']:.1f} %. Vert : revu · Orange : non revu · Gris : non référencé.")
+    if latest_pair_coverage:
+        st.caption(
+            f"Dernière couverture par paire : {latest_pair_coverage['observation_id']} sur "
+            f"{latest_pair_coverage['wall_id']} · {latest_pair_coverage['coverage_of_before_percent']:.1f} % "
+            "de la référence revue. Vert : revu · Orange : non revu."
+        )
     st.dataframe([{"id": wall.id, "room_id": wall.room_id, "length_m": round(wall.length, 2), "height_m": wall.height} for wall in plan.walls], width="stretch", hide_index=True)
 
 with compare_tab:
     st.subheader("Ajouter une observation")
+    if comparison_message := st.session_state.pop("comparison_success_message", None):
+        st.success(comparison_message)
     st.write("Déplacez le plan puis cliquez sur le mur concerné : il sera automatiquement sélectionné pour les photos ajoutées.")
     interactive_plan_3d(
         plan,
@@ -424,6 +452,7 @@ with compare_tab:
         key=f"plan-assignment-{selected_property}",
         height=600,
         allow_wall_selection=True,
+        coverage=coverage_masks,
     )
     before_file = st.file_uploader("Image Before", type=["jpg", "jpeg", "png", "webp"], key="property_before")
     after_file = st.file_uploader("Image After", type=["jpg", "jpeg", "png", "webp"], key="property_after")
@@ -484,7 +513,10 @@ with compare_tab:
             st.session_state["last_observation_dir"] = observation_dir
             st.session_state["last_result"] = result
             st.session_state["last_property"] = selected_property
-            st.success(f"Comparaison et rapport technique enregistrés dans {observation_dir.relative_to(PROJECT_DIR)}")
+            st.session_state["comparison_success_message"] = (
+                f"Comparaison et rapport technique enregistrés dans {observation_dir.relative_to(PROJECT_DIR)}"
+            )
+            st.rerun()
         except (RuntimeError, ValueError, OSError) as exc:
             st.error(f"La comparaison n’a pas pu être exécutée : {exc}")
 
@@ -526,6 +558,7 @@ with compare_tab:
             selected_property,
             key=f"result-{selected_property}",
             height=600,
+            coverage=coverage_masks,
         )
         st.success(f"{len(report['detected_changes'])} changement(s) localisé(s) sur {report['plan']['wall_id']}")
         st.subheader("Rapport technique — détection et distances")

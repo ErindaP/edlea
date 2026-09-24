@@ -112,6 +112,8 @@ class ChangeDetectionPipeline:
         result = {"report": report, "alignment": alignment, "change_maps": {"dino": dino_map, "fused": fused_map, **pixel_maps},
                   "masks": masks, "detections": detections, "visuals": visuals, "text_report": text_report,
                   "source_images": {"aligned_before": alignment.aligned_before, "after": after_image}}
+        if coverage_result:
+            result["coverage_status"] = coverage_result.wall_status
         if output_dir is not None:
             self.save_result(result, output_dir)
         return result
@@ -126,6 +128,8 @@ class ChangeDetectionPipeline:
         for key, filename in names.items():
             if key in result["visuals"]:
                 Image.fromarray(result["visuals"][key]).save(directory / filename)
+        if "coverage_status" in result:
+            Image.fromarray(result["coverage_status"]).save(directory / "coverage_status.png")
         (directory / "report.json").write_text(json.dumps(result["report"], indent=2), encoding="utf-8")
         (directory / "report.txt").write_text(result["text_report"], encoding="utf-8")
         crops_dir = directory / "anomalies"

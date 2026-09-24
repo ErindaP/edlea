@@ -19,6 +19,7 @@ class PairCoverageResult:
     matching_backend: str
     inlier_ratio: float
     overlay: np.ndarray
+    wall_status: np.ndarray
 
     def to_dict(self) -> dict[str, float | int | str | bool]:
         return {
@@ -71,6 +72,8 @@ def analyze_pair_coverage(
     ) > 0
     coverage_of_before = 100 * float(support_in_before.mean())
     comparable_after_percent = 100 * float(comparable_after.mean())
+    wall_status = np.ones(before.shape[:2], dtype=np.uint8)
+    wall_status[support_in_before] = 2
 
     overlay = after.copy()
     excluded = ~comparable_after
@@ -96,4 +99,5 @@ def analyze_pair_coverage(
         matching_backend=matched.backend,
         inlier_ratio=matched.inlier_ratio,
         overlay=overlay,
+        wall_status=wall_status,
     )

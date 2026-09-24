@@ -136,6 +136,33 @@ class HousingStore:
                 continue
         return reports
 
+    def list_pair_coverages(self, property_id: str) -> list[dict[str, Any]]:
+        """Return persisted pairwise coverage layers, oldest first."""
+        observations = self.property_dir(property_id) / "observations"
+        if not observations.exists():
+            return []
+        coverages = []
+        for report_path in observations.glob("*/report.json"):
+            status_path = report_path.parent / "outputs" / "coverage_status.png"
+            if not status_path.is_file():
+                continue
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                coverage = report.get("pair_coverage")
+                wall_id = report.get("plan", {}).get("wall_id")
+                if not coverage or not wall_id:
+                    continue
+                coverages.append({
+                    **coverage,
+                    "observation_id": str(report.get("observation_id", report_path.parent.name)),
+                    "wall_id": str(wall_id),
+                    "status_path": status_path,
+                    "modified_at": report_path.stat().st_mtime,
+                })
+            except (OSError, json.JSONDecodeError):
+                continue
+        return sorted(coverages, key=lambda item: item["modified_at"])
+
     def add_reference(self, property_id: str, wall_id: str, image: bytes,
                       bounds: tuple[float, float, float, float],
                       image_quad: tuple[tuple[float, float], ...], source_name: str = "") -> dict[str, Any]:
