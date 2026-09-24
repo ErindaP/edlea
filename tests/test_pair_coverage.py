@@ -4,7 +4,28 @@ import cv2
 import numpy as np
 import pytest
 
-from src.alignment.coverage import analyze_pair_coverage
+from src.alignment.coverage import analyze_pair_coverage, exclude_boundary_connected_detections
+from src.alignment.keypoints import KeypointMatches
+from src.types import DetectedChange
+
+
+class FixedMatcher:
+    name = "fixed"
+
+    def __init__(self, source_points: np.ndarray, target_points: np.ndarray | None = None):
+        self.source_points = source_points.astype(np.float32)
+        self.target_points = (
+            target_points.astype(np.float32) if target_points is not None else self.source_points.copy()
+        )
+
+    def match(self, image0: np.ndarray, image1: np.ndarray,
+              image1_mask: np.ndarray | None = None) -> KeypointMatches:
+        confidence = np.ones(len(self.source_points), dtype=np.float32)
+        return KeypointMatches(self.source_points, self.target_points, confidence, self.name)
+
+
+def point_grid(xs: list[float], ys: list[float]) -> np.ndarray:
+    return np.float32([(x, y) for y in ys for x in xs])
 
 
 def textured_image(seed: int = 8) -> np.ndarray:
@@ -49,3 +70,40 @@ def test_pair_coverage_rejects_images_without_reliable_overlap():
 
     with pytest.raises(ValueError, match="correspondances géométriques"):
         analyze_pair_coverage(before, after, matching_backend="opencv")
+
+
+def test_localized_but_stable_inliers_are_not_restricted_to_their_convex_hull():
+    before = np.zeros((160, 200, 3), dtype=np.uint8)
+    after = before.copy()
+    # Reproduce the reported support: 16 inliers over 27% x 35% of the image.
+    points = point_grid([55, 73, 91, 109], [40, 59, 77, 96])
+
+    result = analyze_pair_coverage(before, after, matcher=FixedMatcher(points))
+
+    assert result.support_mode == "stability_supported"
+    assert result.alignment.num_inliers == 16
+    assert result.to_dict()["source_span_percent"] == [27.0, 35.0]
+    assert result.coverage_of_before_percent > 85
+    assert result.comparable_after_percent > 85
+    assert result.stability_models == 16
+    assert result.median_reprojection_error < 0.01
+
+
+def test_boundary_connected_changes_are_removed_without_dropping_interior_change():
+    valid = np.zeros((100, 100), dtype=bool)
+    valid[20:80, 20:80] = True
+    boundary_component = np.zeros_like(valid)
+    boundary_component[20:30, 35:45] = True
+    interior_component = np.zeros_like(valid)
+    interior_component[45:55, 45:55] = True
+    detections = [
+        DetectedChange(1, (35, 20, 45, 30), 100, 0.5, "wall", 0.01, boundary_component),
+        DetectedChange(2, (45, 45, 55, 55), 100, 0.6, "wall", 0.01, interior_component),
+    ]
+
+    retained, rejected = exclude_boundary_connected_detections(detections, valid)
+
+    assert rejected == 1
+    assert len(retained) == 1
+    assert retained[0].bbox == (45, 45, 55, 55)
+    assert retained[0].id == 1

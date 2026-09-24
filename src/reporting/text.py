@@ -20,8 +20,8 @@ def generate_text_report(report: dict[str, Any]) -> str:
     coverage_text = ""
     if coverage:
         support_note = ""
-        if coverage.get("support_mode") == "inlier_supported":
-            support_note = " Le recalage étant localisé, l’analyse a été restreinte autour des correspondances fiables."
+        if coverage.get("support_mode") in {"stability_supported", "inlier_supported"}:
+            support_note = " Le recalage étant localisé, l’analyse a été restreinte à sa zone géométriquement stable."
         coverage_text = (
             "\nAnalyse de couverture : "
             f"{coverage.get('coverage_of_before_percent', 0):.1f} % de l’image Avant retrouvée ; "

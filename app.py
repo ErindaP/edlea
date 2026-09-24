@@ -27,7 +27,7 @@ load_dotenv(PROJECT_DIR.parent / ".env")
 load_dotenv(PROJECT_DIR / ".env")
 CONFIG_PATH = PROJECT_DIR / "configs" / "default.yaml"
 HOUSING_ROOT = PROJECT_DIR / "data" / "housing"
-PIPELINE_CACHE_VERSION = "pair-coverage-v4-adaptive-support"
+PIPELINE_CACHE_VERSION = "pair-coverage-v5-stability-support"
 
 
 PLOTLY_CLICK_BRIDGE_JS = r"""
@@ -540,10 +540,10 @@ with compare_tab:
         pair_coverage = report.get("pair_coverage")
         if pair_coverage:
             st.subheader("Couverture géométrique Avant / Après")
-            if pair_coverage.get("support_mode") == "inlier_supported":
+            if pair_coverage.get("support_mode") in {"stability_supported", "inlier_supported"}:
                 st.warning(
-                    "Support géométrique localisé : l’analyse a été limitée autour des correspondances fiables "
-                    "pour éviter les faux défauts aux frontières du recalage."
+                    "Support géométrique localisé : l’analyse a été limitée aux zones où l’homographie reste "
+                    "stable, et les défauts raccordés à sa frontière ont été écartés."
                 )
             coverage_columns = st.columns(2)
             with coverage_columns[0]:

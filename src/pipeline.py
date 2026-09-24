@@ -8,7 +8,7 @@ import numpy as np
 import yaml
 from PIL import Image
 
-from .alignment.coverage import analyze_pair_coverage
+from .alignment.coverage import analyze_pair_coverage, exclude_boundary_connected_detections
 from .alignment.matcher import OpenCVMatcher, RegistrationBackend
 from .comparison.feature import compute_feature_change_map
 from .comparison.fusion import compute_fused_change_map
@@ -76,16 +76,34 @@ class ChangeDetectionPipeline:
             fused_map = np.where(alignment.valid_mask, fused_map, 0.0)
         masks = self.segmenter.segment(after_image)
         detection_cfg = self.config.get("detection", {})
-        threshold = detection_cfg.get("threshold", 0.4)
+        configured_threshold = detection_cfg.get("threshold", 0.4)
+        threshold = configured_threshold
         hysteresis_ratio = detection_cfg.get("hysteresis_ratio", 0.35)
-        if coverage_result and coverage_result.support_mode == "inlier_supported":
+        localized_coverage = bool(
+            coverage_result and coverage_result.support_mode in {"stability_supported", "inlier_supported"}
+        )
+        if localized_coverage:
             # Weakly supported homographies retain more residual viewpoint
-            # noise. Do not let low-score pixels connect it into giant boxes.
-            hysteresis_ratio = max(hysteresis_ratio, 0.65)
-        detections = detect_changes(fused_map, masks, threshold, detection_cfg.get("min_area", 100),
+            # noise. Use a modest confidence floor and do not grow seeds through
+            # weak pixels that connect glass edges to real cracks.
+            threshold = max(threshold, 0.4)
+            hysteresis_ratio = 1.0
+        min_detection_area = detection_cfg.get("min_area", 100)
+        if localized_coverage:
+            min_detection_area = max(
+                min_detection_area,
+                round(float(alignment.valid_mask.sum()) * 0.0025),
+            )
+        detections = detect_changes(fused_map, masks, threshold, min_detection_area,
                                     detection_cfg.get("morph_kernel", 5), detection_cfg.get("opening_kernel", 0),
                                     hysteresis_ratio,
                                     alignment.valid_mask if coverage_analysis else None)
+        boundary_rejections = 0
+        if coverage_result:
+            detections, boundary_rejections = exclude_boundary_connected_detections(
+                detections,
+                alignment.valid_mask,
+            )
         classified_changes = []
         for detection in detections:
             classification = self.classifier.classify(alignment.aligned_before, after_image, fused_map, detection)
@@ -101,7 +119,10 @@ class ChangeDetectionPipeline:
                   "global_change_score": round(float(comparable_values.mean()), 6),
                   "max_change_score": round(float(comparable_values.max()), 6),
                   "detection_threshold": threshold,
+                  "configured_detection_threshold": configured_threshold,
                   "detection_hysteresis_ratio": hysteresis_ratio,
+                  "detection_min_area": min_detection_area,
+                  "coverage_boundary_rejections": boundary_rejections,
                   "changed_surface_ratio": round(float(np.mean(comparable_values > threshold)), 6),
                   "regions": regional_statistics(
                       fused_map, masks, threshold,

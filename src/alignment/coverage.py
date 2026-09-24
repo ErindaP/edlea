@@ -5,10 +5,125 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from src.types import AlignmentResult
+from src.types import AlignmentResult, DetectedChange
 
-from .keypoints import KeypointMatcher, estimate_supported_homography, get_keypoint_matcher
+from .keypoints import HomographyMatch, KeypointMatcher, estimate_supported_homography, get_keypoint_matcher
 from .warp import warp_image
+
+
+STABILITY_TOLERANCE_RATIO = 0.025
+STABILITY_PERCENTILE = 90
+MAX_STABILITY_MODELS = 32
+
+
+def _inlier_reprojection_errors(matched: HomographyMatch) -> np.ndarray:
+    source = matched.inlier_source_points
+    target = matched.points_target[matched.inlier_mask]
+    projected = cv2.perspectiveTransform(source[:, None, :], matched.homography)[:, 0, :]
+    return np.linalg.norm(projected - target, axis=1)
+
+
+def _stability_supported_mask(
+    matched: HomographyMatch,
+    source_shape: tuple[int, int],
+    target_shape: tuple[int, int],
+    projected_target: np.ndarray,
+) -> tuple[np.ndarray | None, float, int]:
+    """Estimate where a locally supported homography remains stable when extrapolated.
+
+    A leave-one-out family exposes homographies that fit the same local inliers but
+    diverge away from them. Unlike a convex hull, this retains textureless wall
+    areas when the projective model is stable there.
+    """
+    source = matched.inlier_source_points
+    target = matched.points_target[matched.inlier_mask]
+    if len(source) < 10:
+        return None, 0.0, 0
+
+    height, width = source_shape
+    grid_step = max(4, round(min(source_shape) / 80))
+    grid_width = max(2, int(np.ceil(width / grid_step)))
+    grid_height = max(2, int(np.ceil(height / grid_step)))
+    xs = np.linspace(0, width - 1, grid_width, dtype=np.float32)
+    ys = np.linspace(0, height - 1, grid_height, dtype=np.float32)
+    grid = np.stack(np.meshgrid(xs, ys), axis=-1).reshape(-1, 1, 2)
+    baseline = cv2.perspectiveTransform(grid, matched.homography)[:, 0, :]
+
+    omitted_indices = np.linspace(
+        0,
+        len(source) - 1,
+        min(len(source), MAX_STABILITY_MODELS),
+        dtype=int,
+    )
+    deviations: list[np.ndarray] = []
+    for omitted in np.unique(omitted_indices):
+        candidate, _ = cv2.findHomography(
+            np.delete(source, omitted, axis=0),
+            np.delete(target, omitted, axis=0),
+            0,
+        )
+        if candidate is None or not np.all(np.isfinite(candidate)):
+            continue
+        prediction = cv2.perspectiveTransform(grid, candidate)[:, 0, :]
+        if np.all(np.isfinite(prediction)):
+            deviations.append(np.linalg.norm(prediction - baseline, axis=1))
+    if len(deviations) < 4:
+        return None, 0.0, len(deviations)
+
+    uncertainty = np.percentile(np.stack(deviations), STABILITY_PERCENTILE, axis=0)
+    uncertainty = uncertainty.reshape(grid_height, grid_width).astype(np.float32)
+    uncertainty = cv2.resize(uncertainty, (width, height), interpolation=cv2.INTER_LINEAR)
+    tolerance = max(8.0, min(target_shape) * STABILITY_TOLERANCE_RATIO)
+    stable = (uncertainty <= tolerance) & projected_target
+
+    close_radius = max(3, round(min(source_shape) * 0.015))
+    close_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (2 * close_radius + 1, 2 * close_radius + 1),
+    )
+    stable = cv2.morphologyEx(stable.astype(np.uint8), cv2.MORPH_CLOSE, close_kernel).astype(bool)
+    stable &= projected_target
+
+    # Discard any disconnected stable island that is unrelated to the actual
+    # inlier support. Such islands can be mathematical coincidences far away.
+    seed = np.zeros(source_shape, dtype=np.uint8)
+    cv2.fillConvexPoly(seed, cv2.convexHull(source).astype(np.int32), 1)
+    labels_count, labels = cv2.connectedComponents(stable.astype(np.uint8), 8)
+    supported = np.zeros_like(stable)
+    for label_id in range(1, labels_count):
+        component = labels == label_id
+        if np.any(component & (seed > 0)):
+            supported |= component
+    minimum_area = max(100, round(float(projected_target.sum()) * 0.05))
+    if int(supported.sum()) < minimum_area:
+        return None, tolerance, len(deviations)
+    return supported, tolerance, len(deviations)
+
+
+def exclude_boundary_connected_detections(
+    detections: list[DetectedChange],
+    analysis_mask: np.ndarray,
+    *,
+    band_pixels: int = 2,
+) -> tuple[list[DetectedChange], int]:
+    """Drop changes clipped by the boundary of a coverage-analysis mask."""
+    radius = max(1, int(band_pixels))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    valid = analysis_mask.astype(bool)
+    interior = cv2.erode(
+        valid.astype(np.uint8),
+        kernel,
+        borderType=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    ).astype(bool)
+    boundary = valid & ~interior
+    retained = [
+        detection for detection in detections
+        if detection.binary_mask is None or not np.any(detection.binary_mask & boundary)
+    ]
+    for identifier, detection in enumerate(retained, start=1):
+        detection.id = identifier
+    return retained, len(detections) - len(retained)
 
 
 @dataclass(frozen=True)
@@ -22,6 +137,10 @@ class PairCoverageResult:
     source_span: tuple[float, float]
     target_span: tuple[float, float]
     safety_margin_pixels: int
+    median_reprojection_error: float
+    p95_reprojection_error: float
+    stability_threshold_pixels: float
+    stability_models: int
     overlay: np.ndarray
     wall_status: np.ndarray
 
@@ -39,6 +158,10 @@ class PairCoverageResult:
             "source_span_percent": [round(100 * value, 1) for value in self.source_span],
             "target_span_percent": [round(100 * value, 1) for value in self.target_span],
             "safety_margin_pixels": self.safety_margin_pixels,
+            "median_reprojection_error_pixels": round(self.median_reprojection_error, 2),
+            "p95_reprojection_error_pixels": round(self.p95_reprojection_error, 2),
+            "stability_threshold_pixels": round(self.stability_threshold_pixels, 1),
+            "stability_models": self.stability_models,
         }
 
 
@@ -75,30 +198,48 @@ def analyze_pair_coverage(
         and min(source_span) >= 0.35
         and min(target_span) >= 0.35
     )
+    reprojection_errors = _inlier_reprojection_errors(matched)
 
-    # The full Before frame still represents the full selected wall. However,
-    # a homography supported by a small feature cluster must not be extrapolated
-    # all the way to the image borders: those warped borders look like defects.
-    support_after = np.full(after.shape[:2], 255, dtype=np.uint8)
+    # The full Before frame still represents the full selected wall. Localized
+    # inliers do not imply that every extrapolation is invalid: use jackknife
+    # stability to retain textureless wall areas where the model remains sound.
+    support_after = projected_before.copy()
     support_mode = "full_footprint"
+    stability_threshold = 0.0
+    stability_models = 0
     if not broadly_supported:
-        support_mode = "inlier_supported"
-        support_after.fill(0)
-        cv2.fillConvexPoly(support_after, cv2.convexHull(inlier_source).astype(np.int32), 255)
-        support_radius = max(5, round(min(after.shape[:2]) * 0.06))
-        support_kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (2 * support_radius + 1, 2 * support_radius + 1),
+        stable_support, stability_threshold, stability_models = _stability_supported_mask(
+            matched,
+            after.shape[:2],
+            before.shape[:2],
+            projected_before,
         )
-        support_after = cv2.dilate(support_after, support_kernel)
+        if stable_support is not None:
+            support_mode = "stability_supported"
+            support_after = stable_support
+        else:
+            support_mode = "inlier_supported"
+            support_after = np.zeros(after.shape[:2], dtype=np.uint8)
+            cv2.fillConvexPoly(support_after, cv2.convexHull(inlier_source).astype(np.int32), 1)
+            support_radius = max(5, round(min(after.shape[:2]) * 0.06))
+            support_kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (2 * support_radius + 1, 2 * support_radius + 1),
+            )
+            support_after = cv2.dilate(support_after, support_kernel).astype(bool)
 
     comparable_after = projected_before & (support_after > 0)
-    safety_margin = max(3, round(min(after.shape[:2]) * (0.01 if broadly_supported else 0.005)))
+    safety_margin = max(3, round(min(after.shape[:2]) * 0.0075))
     safety_kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
         (2 * safety_margin + 1, 2 * safety_margin + 1),
     )
-    comparable_after = cv2.erode(comparable_after.astype(np.uint8), safety_kernel).astype(bool)
+    comparable_after = cv2.erode(
+        comparable_after.astype(np.uint8),
+        safety_kernel,
+        borderType=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    ).astype(bool)
     if int(comparable_after.sum()) < 100:
         raise ValueError("La zone commune fiable entre les deux images est trop petite pour être analysée.")
 
@@ -140,6 +281,10 @@ def analyze_pair_coverage(
         source_span=source_span,
         target_span=target_span,
         safety_margin_pixels=safety_margin,
+        median_reprojection_error=float(np.median(reprojection_errors)),
+        p95_reprojection_error=float(np.percentile(reprojection_errors, 95)),
+        stability_threshold_pixels=stability_threshold,
+        stability_models=stability_models,
         overlay=overlay,
         wall_status=wall_status,
     )
