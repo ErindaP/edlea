@@ -14,6 +14,7 @@ import numpy as np
 
 from src.comparison.pixel import compute_pixel_maps
 from src.detection.regions import detect_changes
+from src.alignment.keypoints import KeypointMatcher, get_keypoint_matcher
 from src.image_io import load_image
 from src.segmentation.segmenter import HeuristicSegmenter
 from src.visualization.overlays import render_detections, render_heatmap
@@ -77,33 +78,20 @@ def _warp(image: np.ndarray, projection: np.ndarray, size: tuple[int, int],
     return warped, mask
 
 
-def _match(scan: np.ndarray, reference: ReferenceView, reference_mask: np.ndarray) -> dict | None:
+def _match(scan: np.ndarray, reference: ReferenceView, reference_mask: np.ndarray,
+           matcher: KeypointMatcher) -> dict | None:
     """Estimate scan->reference homography and reject weak/degenerate matches."""
-    gray_scan = cv2.cvtColor(scan, cv2.COLOR_RGB2GRAY)
-    gray_ref = cv2.cvtColor(reference.image, cv2.COLOR_RGB2GRAY)
-    if hasattr(cv2, "SIFT_create"):
-        detector = cv2.SIFT_create(nfeatures=3500)
-        norm = cv2.NORM_L2
-    else:
-        detector = cv2.ORB_create(nfeatures=4000, fastThreshold=7)
-        norm = cv2.NORM_HAMMING
-    scan_keys, scan_desc = detector.detectAndCompute(gray_scan, None)
-    ref_keys, ref_desc = detector.detectAndCompute(gray_ref, reference_mask)
-    if scan_desc is None or ref_desc is None or len(scan_keys) < 8 or len(ref_keys) < 8:
+    matched = matcher.match(scan, reference.image, reference_mask)
+    if len(matched.points0) < 12:
         return None
-    pairs = cv2.BFMatcher(norm).knnMatch(scan_desc, ref_desc, k=2)
-    good = [first for pair in pairs if len(pair) == 2 for first, second in [pair]
-            if first.distance < 0.72 * second.distance]
-    if len(good) < 12:
-        return None
-    scan_points = np.float32([scan_keys[match.queryIdx].pt for match in good])
-    ref_points = np.float32([ref_keys[match.trainIdx].pt for match in good])
+    scan_points = matched.points0
+    ref_points = matched.points1
     homography, inlier_flags = cv2.findHomography(scan_points, ref_points, cv2.RANSAC, 4.0)
     if homography is None or inlier_flags is None or not np.all(np.isfinite(homography)):
         return None
     inliers = inlier_flags.ravel().astype(bool)
     count = int(inliers.sum())
-    if count < 10 or count / len(good) < 0.45:
+    if count < 10 or count / len(scan_points) < 0.45:
         return None
     # Matching points on a small fixture alone cannot establish whole-wall coverage.
     points = scan_points[inliers]
@@ -123,15 +111,19 @@ def _match(scan: np.ndarray, reference: ReferenceView, reference_mask: np.ndarra
     ref_area = reference.image.shape[0] * reference.image.shape[1]
     if area < ref_area * 0.02 or area > ref_area * 20:
         return None
-    return {"homography": homography, "inliers": count, "matches": len(good),
-            "inlier_ratio": round(count / len(good), 3), "inlier_points": points}
+    return {"homography": homography, "inliers": count, "matches": len(scan_points),
+            "inlier_ratio": round(count / len(scan_points), 3), "inlier_points": points,
+            "mean_confidence": round(float(matched.confidence[inliers].mean()), 3),
+            "matching_backend": matched.backend}
 
 
 def analyze_scan(plan: FloorPlan, references: list[ReferenceView], scans: list[tuple[str, np.ndarray]],
-                 *, threshold: float = 0.32, min_area: int = 90) -> dict:
+                 *, threshold: float = 0.32, min_area: int = 90,
+                 matching_backend: str = "auto") -> dict:
     """Compute per-wall coverage and indicative changes, independently of photo count."""
     if not references:
         raise ValueError("Ajoutez au moins une photo de référence calibrée.")
+    matcher = get_keypoint_matcher(matching_backend)
     prepared = []
     wall_data = {}
     for reference in references:
@@ -159,7 +151,7 @@ def analyze_scan(plan: FloorPlan, references: list[ReferenceView], scans: list[t
         scan = load_image(source, 1280)
         candidates = []
         for view, projection, source_mask, size in prepared:
-            match = _match(scan, view, source_mask)
+            match = _match(scan, view, source_mask, matcher)
             if match is not None:
                 candidates.append((match["inliers"], view, projection, size, match))
         if not candidates:
@@ -172,6 +164,8 @@ def analyze_scan(plan: FloorPlan, references: list[ReferenceView], scans: list[t
                            "inliers": int(candidate_match["inliers"]),
                            "matches": int(candidate_match["matches"]),
                            "inlier_ratio": float(candidate_match["inlier_ratio"]),
+                           "mean_confidence": float(candidate_match["mean_confidence"]),
+                           "matching_backend": candidate_match["matching_backend"],
                            "relative_score_percent": round(100 * candidate_match["inliers"] /
                                                            max(1, match["inliers"]), 1)}
                           for _, candidate_view, _, _, candidate_match in candidates[:3]]
@@ -213,6 +207,8 @@ def analyze_scan(plan: FloorPlan, references: list[ReferenceView], scans: list[t
         registrations.append({"image_id": scan_id, "status": "localisee", "wall_id": view.wall_id,
                               "reference_id": view.id, "inliers": match["inliers"],
                               "matches": match["matches"], "inlier_ratio": match["inlier_ratio"],
+                              "mean_confidence": match["mean_confidence"],
+                              "matching_backend": match["matching_backend"],
                               "coverage_of_reference_percent": round(float(100 * mask.sum() /
                                                                             max(1, item["reference_mask"].sum())), 1),
                               "reference_candidates": candidate_rows})
@@ -261,8 +257,11 @@ def analyze_scan(plan: FloorPlan, references: list[ReferenceView], scans: list[t
             "scan_atlas": after, "change_heatmap": render_heatmap(change_map, after),
             "detections": render_detections(after, detections),
         }
+    used_backends = sorted({candidate["matching_backend"] for registration in registrations
+                            for candidate in registration.get("reference_candidates", [])})
     return {"coverage_percent": round(100 * total_scanned_area / total_reference_area, 1)
             if total_reference_area else 0.0,
             "reference_area_m2": round(total_reference_area, 3),
             "scanned_area_m2": round(total_scanned_area, 3),
+            "matching_backend": " + ".join(used_backends) if used_backends else matcher.name,
             "registrations": registrations, "walls": walls}

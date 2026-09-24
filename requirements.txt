@@ -12,4 +12,5 @@ streamlit>=1.63,<2
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.9.1+cu128
 torchvision==0.24.1+cu128
+# DINOv2, SuperPoint + LightGlue (keypoint matching) and local VLM.
 transformers>=4.56

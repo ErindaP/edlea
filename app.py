@@ -590,7 +590,9 @@ with scan_tab:
         st.metric("Couverture des surfaces de référence", f"{summary['coverage_percent']:.1f} %",
                   help="Somme des surfaces de mur revues divisée par la somme des surfaces de mur référencées.")
         st.caption(f"Surface référencée : {summary['reference_area_m2']:.2f} m² · "
-                   f"Surface revue : {summary['scanned_area_m2']:.2f} m². Les surfaces non référencées sont exclues.")
+                   f"Surface revue : {summary['scanned_area_m2']:.2f} m² · "
+                   f"Appariement : `{summary.get('matching_backend', 'ancien scan / non renseigné')}`. "
+                   "Les surfaces non référencées sont exclues.")
         registration_rows = summary.get("registrations", [])
         scan_names = {image["id"]: image.get("source_name", image["id"])
                       for image in selected_scan.get("images", [])}
@@ -603,7 +605,8 @@ with scan_tab:
                 assignment_rows.append({"Photo du scan": scan_names.get(registration["image_id"], registration["image_id"]),
                                         "Statut": registration["status"], "Rang": "—",
                                         "Référence probable": "—", "Mur probable": "—",
-                                        "Correspondances validées": 0, "Score relatif": "—"})
+                                        "Correspondances validées": 0, "Confiance": "—",
+                                        "Moteur": "—", "Score relatif": "—"})
                 continue
             for rank, candidate in enumerate(candidates, start=1):
                 assignment_rows.append({
@@ -612,6 +615,8 @@ with scan_tab:
                     "Référence probable": reference_names.get(candidate["reference_id"], candidate["reference_id"]),
                     "Mur probable": candidate["wall_id"],
                     "Correspondances validées": candidate["inliers"],
+                    "Confiance": f"{candidate.get('mean_confidence', 0):.1%}",
+                    "Moteur": candidate.get("matching_backend", "—"),
                     "Score relatif": f"{candidate['relative_score_percent']:.1f} %",
                 })
         st.subheader("Attribution automatique des photos")
